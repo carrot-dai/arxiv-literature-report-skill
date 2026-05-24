@@ -270,6 +270,29 @@ arxiv-literature-report --config examples/config.example.json --profile mak_shan
 Select-String -Path .\* -Pattern 'E:\\notebook','C:\\Users\\25431' -Recurse
 ```
 
+## 发布到 GitHub
+
+如果你使用 GitHub CLI：
+
+```powershell
+gh auth login -h github.com
+gh repo create arxiv-literature-report-skill --public --source . --remote origin --push
+```
+
+如果已经在 GitHub 网页端创建了空仓库：
+
+```powershell
+git remote add origin https://github.com/<your-name>/arxiv-literature-report-skill.git
+git push -u origin main
+```
+
+发布前确认：
+
+```powershell
+git status --short
+git log --oneline -1
+```
+
 ## 常见问题
 
 **为什么周报要加 `--include-seen`？**

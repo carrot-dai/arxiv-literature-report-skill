@@ -1,0 +1,4 @@
+display_name: arXiv Literature Report
+short_description: Generate configurable arXiv daily and weekly literature reports.
+default_prompt: Generate a weekly arXiv literature report for my configured research field.
+

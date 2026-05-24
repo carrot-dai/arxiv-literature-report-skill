@@ -1,0 +1,21 @@
+{
+  "defaults": {
+    "output_dir": "outputs/arxiv_literature_reports",
+    "language": "bilingual",
+    "report_kind": "weekly",
+    "days": 7,
+    "include_seen": true,
+    "include_uncategorized": true
+  },
+  "profiles": {
+    "wse2_superconductivity": {
+      "field_name": "WSe2 superconductivity",
+      "query": [
+        "all:WSe2 AND all:superconductivity",
+        "all:WSe2 AND all:superconducting",
+        "all:\"transition metal dichalcogenide\" AND all:superconductivity"
+      ]
+    }
+  }
+}
+

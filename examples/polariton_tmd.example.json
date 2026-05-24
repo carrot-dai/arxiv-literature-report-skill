@@ -1,0 +1,15 @@
+{
+  "defaults": {
+    "output_dir": "outputs/arxiv_literature_reports",
+    "language": "zh",
+    "report_kind": "weekly",
+    "days": 7,
+    "include_seen": true
+  },
+  "profiles": {
+    "polariton_tmd": {
+      "field_name": "arXiv polariton and 2D/TMD materials"
+    }
+  }
+}
+

@@ -1,0 +1,52 @@
+{
+  "defaults": {
+    "output_dir": "outputs/arxiv_literature_reports",
+    "days": 5,
+    "language": "zh",
+    "report_kind": "daily",
+    "page_size": 50,
+    "max_pages": 4,
+    "sleep_seconds": 10,
+    "retry_attempts": 2,
+    "retry_base_seconds": 60
+  },
+  "profiles": {
+    "polariton_tmd": {
+      "field_name": "arXiv polariton and 2D/TMD materials",
+      "report_kind": "weekly",
+      "days": 7,
+      "language": "zh",
+      "include_seen": true
+    },
+    "wse2_superconductivity": {
+      "field_name": "WSe2 superconductivity",
+      "query": [
+        "all:WSe2 AND all:superconductivity",
+        "all:WSe2 AND all:superconducting",
+        "all:\"transition metal dichalcogenide\" AND all:superconductivity"
+      ],
+      "report_kind": "weekly",
+      "days": 7,
+      "language": "bilingual",
+      "include_uncategorized": true,
+      "include_seen": true
+    },
+    "mak_shan_tracking": {
+      "field_name": "Mak-Shan group tracked TMD and moire systems",
+      "query": [
+        "all:\"Kin Fai Mak\" OR all:\"Jie Shan\"",
+        "all:\"MoTe2/WSe2\" OR all:\"MoTe2\" AND all:\"WSe2\"",
+        "all:\"Chern insulator\" AND all:moire",
+        "all:\"Kondo lattice\" AND all:TMD",
+        "all:\"TMD superconductivity\""
+      ],
+      "track_group": "Mak-Shan通讯团队",
+      "report_kind": "weekly",
+      "days": 14,
+      "language": "zh",
+      "include_uncategorized": true,
+      "include_seen": true
+    }
+  }
+}
+

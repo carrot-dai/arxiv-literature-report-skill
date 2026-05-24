@@ -1,0 +1,24 @@
+{
+  "defaults": {
+    "output_dir": "outputs/arxiv_literature_reports",
+    "language": "zh",
+    "report_kind": "weekly",
+    "days": 14,
+    "include_seen": true,
+    "include_uncategorized": true
+  },
+  "profiles": {
+    "mak_shan_tracking": {
+      "field_name": "Mak-Shan group tracked TMD and moire systems",
+      "track_group": "Mak-Shan通讯团队",
+      "query": [
+        "all:\"Kin Fai Mak\" OR all:\"Jie Shan\"",
+        "all:\"MoTe2/WSe2\" OR all:\"MoTe2\" AND all:\"WSe2\"",
+        "all:\"Chern insulator\" AND all:moire",
+        "all:\"Kondo lattice\" AND all:TMD",
+        "all:\"TMD superconductivity\""
+      ]
+    }
+  }
+}
+

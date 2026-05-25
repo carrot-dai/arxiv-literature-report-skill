@@ -12,6 +12,8 @@ Every report card includes a lightweight `nature-reader` + `nature-polishing` st
 - full English abstract
 - materials/systems, methods/evidence, and why-it-matters notes
 
+The digest is source-grounded rather than keyword-only: it extracts problem, evidence/approach, and result/implication sentences from the abstract, then formats them as a concise reader note without inventing data or claims.
+
 The daily and weekly automation remains source-grounded to arXiv metadata. Full-paper bilingual readers, figure extraction, and page-level source maps should still be generated through the separate `nature-reader` workflow when a paper needs intensive reading.
 
 ## Fixed weekly archives
@@ -36,6 +38,8 @@ outputs/arxiv_literature_reports/2026/07/周报/2026-06-29_to_2026-07-05/arxiv_l
 ```
 
 Weekly JSON/TXT/HTML outputs include `report_scope`, `week_start`, `week_end`, `segment_start`, and `segment_end`. Weekly runs merge seen-state and summary override files from all months touched by the week, but they do not write seen state; daily runs remain responsible for deduplication state.
+
+Daily and weekly outputs also include `date_counts`, show the date distribution in TXT/HTML, and render paper cards under updated-date sections before topic subsections. This keeps a 5-day daily window readable instead of mixing all records into one undated list.
 
 一个可配置的 arXiv 文献日报/周报生成器，同时提供 Python CLI 和 Codex skill。它可以按用户指定的研究领域检索 arXiv，基于更新时间窗口去重，生成 HTML、JSON 和 TXT 报告，并长期追踪重点课题组或重点论文的发表状态。
 
@@ -284,6 +288,7 @@ arXiv API 有速率限制。脚本默认：
 - 使用 `User-Agent` 标识。
 - 每页请求之间等待 `--sleep-seconds`。
 - 遇到 429、503 或 rate-limit 文本会按 `--retry-attempts` 和 `--retry-base-seconds` 重试。
+- 如果 arXiv API 持续 429/503，脚本会退到官方 arXiv OAI `ListRecords`，扫描 `physics:cond-mat`、`physics:physics`、`physics:quant-ph` 和 `eess:eess`，再用本地极化激元/TMD/等离激元/微腔规则做严格过滤。这样可以避免把 API 限流误报成“真实空结果”。
 
 如果你频繁运行多个 profile，建议增大间隔：
 
@@ -342,7 +347,7 @@ git log --oneline -1
 
 **能不能自动翻译成高质量中文摘要？**
 
-内置摘要是轻量规则生成，适合快速筛选。若需要 Nature 风格摘要润色，建议在 Codex 中联动 `nature-polishing`。
+内置摘要已按 `nature-reader` 的证据定位和 `nature-polishing` 的摘要逻辑生成，会保留摘要中的问题、证据路径和结论线索。若需要全文级中文润色、图文对应或逐段翻译，仍应在 Codex 中联动完整的 `nature-reader` 或 `nature-polishing` 工作流。
 
 **这个项目会下载 PDF 吗？**
 

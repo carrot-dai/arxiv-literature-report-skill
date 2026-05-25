@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import datetime as dt
 from pathlib import Path
 
 
@@ -18,11 +19,14 @@ from arxiv_literature_report import core  # noqa: E402
 def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT / "src")
+    env["PYTHONIOENCODING"] = "utf-8"
     return subprocess.run(
         [sys.executable, "-m", "arxiv_literature_report", *args],
         cwd=ROOT,
         env=env,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         check=False,
     )
@@ -209,6 +213,69 @@ class SmokeTests(unittest.TestCase):
         self.assertEqual(record["full_abstract_en"], record["summary"])
         self.assertIn("润色英文导读", core.render_paper_card(record, 1, "zh"))
         self.assertIn("重点提炼", core.render_paper_card(record, 1, "zh"))
+        self.assertIn("问题：", record["key_takeaways_cn"])
+        self.assertIn("结论线索：", record["key_takeaways_cn"])
+        self.assertIn("addresses", record["polished_abstract_en"])
+
+        html = core.render_html(
+            [record],
+            [],
+            dt.datetime(2026, 5, 25, 21, tzinfo=core.CHINA_TZ),
+            5,
+            language="zh",
+        )
+        self.assertIn("日期分布", html)
+        self.assertIn("更新日期：2026-05-24", html)
+        payload = core.serializable_report(
+            [record],
+            [],
+            dt.datetime(2026, 5, 25, 21, tzinfo=core.CHINA_TZ),
+            5,
+        )
+        self.assertEqual(payload["date_counts"], {"2026-05-24": 1})
+
+    def test_oai_records_are_parsed_and_scoped_for_rate_limit_fallback(self) -> None:
+        xml_text = """<?xml version="1.0" encoding="UTF-8"?>
+<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/"
+  xmlns:arXiv="http://arxiv.org/OAI/arXiv/">
+  <ListRecords>
+    <record>
+      <header>
+        <identifier>oai:arXiv.org:2605.12345</identifier>
+        <datestamp>2026-05-24</datestamp>
+      </header>
+      <metadata>
+        <arXiv:arXiv>
+          <arXiv:id>2605.12345v1</arXiv:id>
+          <arXiv:created>2026-05-24</arXiv:created>
+          <arXiv:updated>2026-05-24</arXiv:updated>
+          <arXiv:authors>
+            <arXiv:author>
+              <arXiv:forenames>A.</arXiv:forenames>
+              <arXiv:keyname>Researcher</arXiv:keyname>
+            </arXiv:author>
+          </arXiv:authors>
+          <arXiv:title>Exciton polaritons in a WS2 photonic crystal cavity</arXiv:title>
+          <arXiv:categories>physics.optics cond-mat.mtrl-sci</arXiv:categories>
+          <arXiv:abstract>We demonstrate strong coupling and polariton emission in monolayer WS2.</arXiv:abstract>
+        </arXiv:arXiv>
+      </metadata>
+    </record>
+  </ListRecords>
+</OAI-PMH>
+"""
+        records, token = core.parse_oai_entries(
+            xml_text,
+            dt.datetime(2026, 5, 20, tzinfo=core.UTC),
+            dt.datetime(2026, 5, 25, tzinfo=core.UTC),
+        )
+
+        self.assertIsNone(token)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["source"], "arxiv-oai-fallback")
+        scoped_topics = core.oai_scope_topics(records[0])
+        self.assertIn(core.TOPIC_EXCITON, scoped_topics)
+        self.assertIn(core.TOPIC_TMD, scoped_topics)
 
 
 if __name__ == "__main__":

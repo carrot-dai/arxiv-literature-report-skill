@@ -26,7 +26,13 @@ from pathlib import Path
 from typing import Any
 
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 API_URL = "https://export.arxiv.org/api/query"
+OAI_URL = "https://export.arxiv.org/oai2"
 USER_AGENT = "ArxivLiteratureReport/1.0 (+https://arxiv.org/help/api)"
 SEEN_STATE_FILENAME = "arxiv_literature_seen_ids.json"
 SUMMARY_STATE_FILENAME = "arxiv_literature_cn_summaries.json"
@@ -36,7 +42,15 @@ DAILY_SUBDIR = "\u65e5\u62a5"
 WEEKLY_SUBDIR = "\u5468\u62a5"
 ATOM = "{http://www.w3.org/2005/Atom}"
 ARXIV = "{http://arxiv.org/schemas/atom}"
+OAI = "{http://www.openarchives.org/OAI/2.0/}"
+OAI_ARXIV = "{http://arxiv.org/OAI/arXiv/}"
 RATE_LIMIT_BODY = "rate exceeded"
+OAI_FALLBACK_SETS = (
+    "physics:cond-mat",
+    "physics:physics",
+    "physics:quant-ph",
+    "eess:eess",
+)
 
 
 class ArxivRateLimitError(RuntimeError):
@@ -752,32 +766,107 @@ def terms_en(items: list[str], fallback: str) -> str:
     return ", ".join(translated) if translated else fallback
 
 
-def polished_english_digest(record: dict[str, Any], materials: list[str], phenomena: list[str], methods: list[str]) -> str:
+def sentence_matching(
+    sentences: list[str],
+    patterns: list[str],
+    fallback_index: int = 0,
+    reverse: bool = False,
+) -> str:
+    search_space = list(reversed(sentences)) if reverse else sentences
+    for pattern in patterns:
+        regex = re.compile(pattern, flags=re.IGNORECASE)
+        for sentence in search_space:
+            if regex.search(sentence):
+                return sentence
+    if not sentences:
+        return ""
+    return sentences[min(max(fallback_index, 0), len(sentences) - 1)]
+
+
+def shorten_sentence(sentence: str, max_chars: int = 240) -> str:
+    sentence = normalize_space(sentence)
+    if len(sentence) <= max_chars:
+        return sentence
+    return sentence[: max_chars - 1].rstrip(" ,;:") + "…"
+
+
+def sentence_period(sentence: str) -> str:
+    sentence = normalize_space(sentence)
+    if not sentence or sentence.endswith((".", "?", "!", "。", "？", "！", "…")):
+        return sentence
+    return sentence + "."
+
+
+def evidence_sentences(record: dict[str, Any]) -> dict[str, str]:
     sentences = abstract_sentences(record.get("summary", ""))
-    first = sentences[0] if sentences else record.get("title", "")
-    final = sentences[-1] if len(sentences) > 1 else ""
+    title = normalize_space(record.get("title", ""))
+    if not sentences and title:
+        sentences = [title]
+    problem = sentence_matching(
+        sentences,
+        [
+            r"\b(challenge|problem|bottleneck|limitation|limited|unclear|unknown|need|requires?|remain|gap|difficult)\b",
+            r"\b(we investigate|we study|this work|here)\b",
+        ],
+        0,
+    )
+    approach = sentence_matching(
+        sentences,
+        [
+            r"\b(here|in this work|this study|we).{0,120}\b(use|using|construct|develop|model|measure|probe|calculate|simulate|demonstrate|report|observe|analy[sz]e|derive|solve|grow)\b",
+            r"\b(using|via|through|based on|with)\b.{0,140}\b(measure|mapping|spectroscop|photoluminescence|simulation|calculation|model|analysis|microscopy|transport)\b",
+            r"\b(photoluminescence|spectroscop|mapping|measurement|simulation|calculation|first-principles|DFT|microscopy|transport)\b.{0,140}\b(reveal|show|indicat|demonstrat|confirm|measure)\b",
+        ],
+        1 if len(sentences) > 1 else 0,
+    )
+    result = sentence_matching(
+        sentences,
+        [
+            r"\b(these results|these findings|our findings|this work|we show|we find|we demonstrate|we reveal)\b",
+            r"\b(show|shows|shown|find|finds|found|demonstrate|demonstrates|reveal|reveals|enable|enables|achieve|achieves|suggest|suggests|provide|provides|establish|indicat\w*|opens?|offers?)\b",
+            r"\b(result|therefore|thus|indicat|lead)\b",
+        ],
+        len(sentences) - 1,
+        reverse=True,
+    )
+    return {
+        "problem": shorten_sentence(problem),
+        "approach": shorten_sentence(approach),
+        "result": shorten_sentence(result),
+    }
+
+
+def polished_english_digest(record: dict[str, Any], materials: list[str], phenomena: list[str], methods: list[str]) -> str:
+    evidence = evidence_sentences(record)
     paper_type = infer_paper_type(f"{record.get('title', '')} {record.get('summary', '')}")
     topic_text = terms_en(record.get("topics", [])[:3], "the target research area")
     system_text = terms_en(materials[:3], "the reported material or photonic platform")
     phenomena_text = terms_en(phenomena[:3], "the relevant light-matter interaction")
     method_text = terms_en(methods[:3], "")
-    parts = [
-        f"This {paper_type} is relevant to {topic_text}.",
-        f"It centers on {system_text} and examines {phenomena_text}.",
-    ]
+
+    first = (
+        f"This {paper_type} addresses {phenomena_text} in {system_text}, "
+        f"making it relevant to {topic_text}."
+    )
+    second = (
+        f"The abstract frames the central question as: {sentence_period(evidence['problem'])}"
+        if evidence["problem"]
+        else f"The abstract positions the work around {system_text} and {phenomena_text}."
+    )
     if method_text:
-        parts.append(f"The evidence base is mainly associated with {method_text}.")
-    if first:
-        parts.append(f"The central problem, as stated in the abstract, is: {first}")
-    if final and final != first:
-        parts.append(f"The concluding implication is: {final}")
-    return " ".join(parts)
+        third = f"The reported route combines {method_text}, with the key evidence summarized as: {sentence_period(evidence['approach'])}"
+    else:
+        third = f"The reported route is summarized in the abstract as: {sentence_period(evidence['approach'])}"
+    fourth = (
+        f"The main implication to check is: {sentence_period(evidence['result'])}"
+        if evidence["result"] and evidence["result"] != evidence["problem"]
+        else "Read the full abstract and paper before treating the claim as established."
+    )
+    return " ".join(part for part in [first, second, third, fourth] if part)
 
 
 def chinese_reader_summary(record: dict[str, Any], materials: list[str], phenomena: list[str], methods: list[str]) -> str:
-    sentences = abstract_sentences(record.get("summary", ""))
-    opening = sentences[0] if sentences else record.get("title", "")
-    ending = sentences[-1] if len(sentences) > 1 else ""
+    evidence = evidence_sentences(record)
     paper_type_map = {
         "review or perspective": "综述/观点型预印本",
         "methods or platform paper": "方法或平台型预印本",
@@ -786,39 +875,37 @@ def chinese_reader_summary(record: dict[str, Any], materials: list[str], phenome
         "research preprint": "研究型预印本",
     }
     paper_type = paper_type_map.get(infer_paper_type(f"{record.get('title', '')} {record.get('summary', '')}"), "研究型预印本")
+    method_text = join_cn(methods[:4])
     summary = (
-        f"这是一篇{paper_type}。从 arXiv 摘要看，文章围绕 {join_cn(materials[:4])} 中的"
-        f"{join_cn(phenomena[:4])}展开，主要证据或分析路径包括 {join_cn(methods[:4])}。"
+        f"这篇{paper_type}围绕{join_cn(materials[:4])}的{join_cn(phenomena[:4])}展开。"
+        f"按 nature-reader 的读法，先抓问题、证据和结论三层：摘要把核心问题定位为“{evidence['problem']}”；"
+        f"证据路径是 {method_text}，对应原文线索为“{evidence['approach']}”；"
+        f"结论需要核对的是“{evidence['result']}”。"
     )
-    if opening:
-        summary += f" 摘要开篇强调的问题是：{opening}"
-    if ending and ending != opening:
-        summary += f" 摘要最后给出的意义或边界是：{ending}"
     return summary
 
 
 def key_takeaways_cn(record: dict[str, Any], materials: list[str], phenomena: list[str], methods: list[str]) -> str:
     topics = set(record.get("topics", []))
-    focus: list[str] = []
-    if TOPIC_PLASMONICS in topics:
-        focus.append("近场增强、模式约束、损耗和可集成性")
-    if TOPIC_MICROCAVITY in topics:
-        focus.append("腔模设计、强耦合判据和器件实现条件")
-    if TOPIC_PHOTONIC_CRYSTAL in topics:
-        focus.append("高 Q、小模体积、片上耦合和量子光学适配性")
-    if TOPIC_EXCITON in topics:
-        focus.append("Rabi 劈裂、凝聚、相干输运或非线性响应")
-    if TOPIC_TMD in topics:
-        focus.append("二维材料、谷/莫尔自由度和片上耦合")
-    if TOPIC_PEROVSKITE in topics:
-        focus.append("室温工作、低阈值和材料可加工性")
+    evidence = evidence_sentences(record)
     points = [
-        f"研究对象：{join_cn(materials[:4])}",
-        f"核心物理：{join_cn(phenomena[:4])}",
-        f"证据路径：{join_cn(methods[:4])}",
+        f"问题：{evidence['problem']}",
+        f"体系：{join_cn(materials[:4])}",
+        f"方法/证据：{join_cn(methods[:4])}",
+        f"结论线索：{evidence['result']}",
     ]
-    if focus:
-        points.append(f"阅读重点：{join_cn(focus)}")
+    if TOPIC_PLASMONICS in topics:
+        points.append("阅读重点：近场增强、模式约束、损耗和可集成性")
+    if TOPIC_MICROCAVITY in topics:
+        points.append("阅读重点：腔模设计、强耦合判据和器件实现条件")
+    if TOPIC_PHOTONIC_CRYSTAL in topics:
+        points.append("阅读重点：高 Q、小模体积、片上耦合和量子光学适配性")
+    if TOPIC_EXCITON in topics:
+        points.append("阅读重点：Rabi 劈裂、凝聚、相干输运或非线性响应")
+    if TOPIC_TMD in topics:
+        points.append("阅读重点：二维材料、谷/莫尔自由度和片上耦合")
+    if TOPIC_PEROVSKITE in topics:
+        points.append("阅读重点：室温工作、低阈值和材料可加工性")
     return "；".join(points) + "。"
 
 
@@ -830,6 +917,7 @@ def build_cn_fields(record: dict[str, Any]) -> dict[str, str]:
     topics = set(record.get("topics", []))
     summary = chinese_reader_summary(record, materials, phenomena, methods)
     contribution = polished_english_digest(record, materials, phenomena, methods)
+    takeaways = key_takeaways_cn(record, materials, phenomena, methods)
     why_parts: list[str] = []
     if TOPIC_TMD in topics:
         why_parts.append("可为二维半导体、谷/莫尔激子与片上耦合器件提供参考")
@@ -852,7 +940,7 @@ def build_cn_fields(record: dict[str, Any]) -> dict[str, str]:
         "why_it_matters_cn": why,
         "full_abstract_en": normalize_space(record.get("summary", "")),
         "polished_abstract_en": contribution,
-        "key_takeaways_cn": key_takeaways_cn(record, materials, phenomena, methods),
+        "key_takeaways_cn": takeaways,
         "paper_type": infer_paper_type(text),
     }
 
@@ -978,6 +1066,236 @@ def parse_entries(xml_text: str) -> list[dict[str, Any]]:
     return records
 
 
+def parse_oai_date(value: str) -> dt.date:
+    return dt.date.fromisoformat(normalize_space(value)[:10])
+
+
+def oai_datetime_for_window(
+    value: str,
+    window_start: dt.datetime,
+    window_end: dt.datetime,
+) -> dt.datetime:
+    updated_date = parse_oai_date(value)
+    updated = dt.datetime.combine(updated_date, dt.time(12, 0), tzinfo=UTC)
+    if updated.date() == window_start.date() and updated < window_start:
+        updated = window_start
+    if updated.date() == window_end.date() and updated > window_end:
+        updated = window_end
+    return updated
+
+
+def fetch_oai_page(
+    params: dict[str, str],
+    timeout: int,
+    retry_attempts: int,
+    retry_base_seconds: float,
+) -> str:
+    request = urllib.request.Request(
+        f"{OAI_URL}?{urllib.parse.urlencode(params)}",
+        headers={"User-Agent": USER_AGENT},
+    )
+    for attempt in range(retry_attempts):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                text = response.read().decode("utf-8", errors="replace")
+                if text.strip().lower().startswith(RATE_LIMIT_BODY):
+                    raise ArxivRateLimitError("arXiv OAI returned 'Rate exceeded.'")
+                return text
+        except urllib.error.HTTPError as exc:
+            if exc.code not in {429, 503}:
+                raise
+            if attempt == retry_attempts - 1:
+                raise ArxivRateLimitError(f"arXiv OAI returned HTTP {exc.code}.") from exc
+            time.sleep(retry_delay(exc.headers, attempt, retry_base_seconds))
+        except (http.client.IncompleteRead, TimeoutError, ArxivRateLimitError):
+            if attempt == retry_attempts - 1:
+                raise
+            time.sleep(retry_delay(None, attempt, retry_base_seconds))
+    raise RuntimeError("unreachable arXiv OAI retry state")
+
+
+def oai_author_name(author: ET.Element) -> str:
+    forenames = normalize_space(author.findtext(f"{OAI_ARXIV}forenames"))
+    keyname = normalize_space(author.findtext(f"{OAI_ARXIV}keyname"))
+    suffix = normalize_space(author.findtext(f"{OAI_ARXIV}suffix"))
+    return normalize_space(" ".join(part for part in (forenames, keyname, suffix) if part))
+
+
+def parse_oai_entries(
+    xml_text: str,
+    window_start: dt.datetime,
+    window_end: dt.datetime,
+) -> tuple[list[dict[str, Any]], str | None]:
+    root = ET.fromstring(xml_text)
+    error = root.find(f"{OAI}error")
+    if error is not None and error.attrib.get("code") == "noRecordsMatch":
+        return [], None
+    if error is not None:
+        raise ValueError(normalize_space(error.text or error.attrib.get("code", "OAI error")))
+
+    records: list[dict[str, Any]] = []
+    for record in root.findall(f".//{OAI}record"):
+        header = record.find(f"{OAI}header")
+        metadata = record.find(f"{OAI}metadata")
+        if header is not None and header.attrib.get("status") == "deleted":
+            continue
+        if metadata is None:
+            continue
+        arxiv = metadata.find(f"{OAI_ARXIV}arXiv")
+        if arxiv is None:
+            continue
+
+        arxiv_id = normalize_space(arxiv.findtext(f"{OAI_ARXIV}id"))
+        if not arxiv_id:
+            continue
+        updated_text = normalize_space(arxiv.findtext(f"{OAI_ARXIV}updated"))
+        datestamp = normalize_space(header.findtext(f"{OAI}datestamp")) if header is not None else ""
+        updated_text = updated_text or datestamp
+        created_text = normalize_space(arxiv.findtext(f"{OAI_ARXIV}created")) or updated_text
+        categories = normalize_space(arxiv.findtext(f"{OAI_ARXIV}categories")).split()
+        authors = [
+            name
+            for name in (oai_author_name(author) for author in arxiv.findall(f".//{OAI_ARXIV}author"))
+            if name
+        ]
+        updated_datetime = oai_datetime_for_window(updated_text, window_start, window_end)
+        published_datetime = oai_datetime_for_window(created_text, window_start, window_end)
+        records.append(
+            {
+                "arxiv_id": arxiv_id,
+                "base_id": arxiv_base_id(arxiv_id),
+                "abs_url": f"https://arxiv.org/abs/{arxiv_id}",
+                "pdf_url": f"https://arxiv.org/pdf/{arxiv_id}",
+                "title": normalize_space(arxiv.findtext(f"{OAI_ARXIV}title")),
+                "summary": normalize_space(arxiv.findtext(f"{OAI_ARXIV}abstract")),
+                "authors": authors,
+                "updated": updated_datetime.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "published": published_datetime.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "updated_datetime": updated_datetime,
+                "published_datetime": published_datetime,
+                "primary_category": categories[0] if categories else "",
+                "categories": categories,
+                "doi": normalize_space(arxiv.findtext(f"{OAI_ARXIV}doi")),
+                "journal_ref": normalize_space(arxiv.findtext(f"{OAI_ARXIV}journal-ref")),
+                "comment": normalize_space(arxiv.findtext(f"{OAI_ARXIV}comments")),
+                "topics": [],
+                "matched_queries": [],
+                "source": "arxiv-oai-fallback",
+            }
+        )
+
+    token = root.find(f".//{OAI}resumptionToken")
+    resumption_token = normalize_space(token.text) if token is not None and token.text else None
+    return records, resumption_token
+
+
+def oai_scope_topics(record: dict[str, Any]) -> list[str]:
+    text = f"{record['title']} {record['summary']}"
+    topics: list[str] = []
+    if re.search(
+        r"\b[a-z0-9-]*[- ]?polaritons?\b|\bpolaritonic\b|microcavity polariton",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        topics.append(TOPIC_EXCITON)
+    if is_2d_tmd_material(text):
+        topics.append(TOPIC_TMD)
+    if re.search(r"perovskite|halide perovskite|lead halide", text, flags=re.IGNORECASE) and re.search(
+        r"\b[a-z0-9-]*[- ]?polaritons?\b|\bpolaritonic\b|strong coupling",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        topics.append(TOPIC_PEROVSKITE)
+    if is_plasmonics_like(text):
+        topics.append(TOPIC_PLASMONICS)
+    if is_microcavity_like(text):
+        topics.append(TOPIC_MICROCAVITY)
+    if is_photonic_crystal_cavity_like(text):
+        topics.append(TOPIC_PHOTONIC_CRYSTAL)
+    return [topic for topic in TOPIC_ORDER if topic in set(topics)]
+
+
+def collect_oai_fallback_records(
+    args: argparse.Namespace,
+    window_start: dt.datetime,
+    window_end: dt.datetime,
+    summary_overrides: dict[str, str],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    by_id: dict[str, dict[str, Any]] = {}
+    errors: list[str] = []
+    from_date = window_start.date().isoformat()
+    until_date = window_end.date().isoformat()
+
+    for set_spec in OAI_FALLBACK_SETS:
+        token: str | None = None
+        while True:
+            params = (
+                {"verb": "ListRecords", "resumptionToken": token}
+                if token
+                else {
+                    "verb": "ListRecords",
+                    "metadataPrefix": "arXiv",
+                    "from": from_date,
+                    "until": until_date,
+                    "set": set_spec,
+                }
+            )
+            try:
+                xml_text = fetch_oai_page(
+                    params,
+                    args.timeout,
+                    args.retry_attempts,
+                    args.retry_base_seconds,
+                )
+                page_records, token = parse_oai_entries(xml_text, window_start, window_end)
+            except ArxivRateLimitError as exc:
+                errors.append(f"OAI fallback {set_spec} stopped: {exc}")
+                break
+            except (urllib.error.URLError, TimeoutError, ET.ParseError, ValueError) as exc:
+                errors.append(f"OAI fallback {set_spec} failed: {exc}")
+                break
+
+            for record in page_records:
+                updated = record["updated_datetime"]
+                if not (window_start <= updated <= window_end):
+                    continue
+                scoped_topics = oai_scope_topics(record)
+                if not scoped_topics and not args.include_uncategorized and not args.query:
+                    continue
+                existing = by_id.setdefault(record["base_id"], record)
+                if updated > existing["updated_datetime"]:
+                    existing.update(record)
+                existing["topics"] = [topic for topic in TOPIC_ORDER if topic in set(existing.get("topics", [])) | set(scoped_topics)]
+                existing["matched_queries"].append(f"oai:{set_spec}")
+
+            if not token:
+                break
+            if args.sleep_seconds > 0:
+                time.sleep(args.sleep_seconds)
+
+        if args.sleep_seconds > 0:
+            time.sleep(args.sleep_seconds)
+
+    records = list(by_id.values())
+    for record in records:
+        if args.query and not record["topics"]:
+            record["topics"] = [args.field_name]
+        record["score"] = score_record(record)
+        record.update(build_cn_fields(record))
+        summary_override = summary_overrides.get(record["base_id"]) or summary_overrides.get(record["arxiv_id"])
+        if summary_override:
+            record["summary_cn"] = summary_override
+
+    records.sort(key=lambda item: (item["updated_datetime"], item["score"]), reverse=True)
+    for record in records:
+        record["updated_local"] = record["updated_datetime"].astimezone(CHINA_TZ).isoformat()
+        record["published_local"] = record["published_datetime"].astimezone(CHINA_TZ).isoformat()
+        record.pop("updated_datetime", None)
+        record.pop("published_datetime", None)
+
+    return records, errors
+
+
 def collect_records(args: argparse.Namespace, as_of: dt.datetime) -> tuple[list[dict[str, Any]], list[str]]:
     window_start = getattr(args, "window_start", as_of - dt.timedelta(days=args.days)).astimezone(UTC)
     window_end = getattr(args, "window_end", as_of).astimezone(UTC)
@@ -1040,6 +1358,17 @@ def collect_records(args: argparse.Namespace, as_of: dt.datetime) -> tuple[list[
         if args.sleep_seconds > 0 and topic_index < len(queries) - 1:
             time.sleep(args.sleep_seconds)
 
+    if rate_limited:
+        fallback_records, fallback_errors = collect_oai_fallback_records(
+            args,
+            window_start,
+            window_end,
+            summary_overrides,
+        )
+        if fallback_records or not fallback_errors:
+            return fallback_records, fallback_errors
+        errors.extend(fallback_errors)
+
     records = list(by_id.values())
     classified_records: list[dict[str, Any]] = []
     for record in records:
@@ -1080,6 +1409,37 @@ def topic_counts(records: list[dict[str, Any]]) -> dict[str, int]:
         for topic in record.get("topics", []):
             counts[topic] = counts.get(topic, 0) + 1
     return counts
+
+
+def record_date_label(record: dict[str, Any]) -> str:
+    raw_value = normalize_space(record.get("updated_local") or record.get("updated") or "")
+    if not raw_value:
+        return "日期未知"
+    try:
+        parsed = dt.datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(CHINA_TZ).date().isoformat()
+    except ValueError:
+        return raw_value[:10] or "日期未知"
+
+
+def record_date_counts(records: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for record in records:
+        label = record_date_label(record)
+        counts[label] = counts.get(label, 0) + 1
+    return dict(sorted(counts.items(), key=lambda item: item[0], reverse=True))
+
+
+def format_date_distribution(counts: dict[str, int], language: str) -> str:
+    if not counts:
+        return ""
+    if language == "en":
+        return "; ".join(f"{date}: {count}" for date, count in counts.items())
+    if language == "bilingual":
+        return "；".join(f"{date} {count} 篇 / {count} records" for date, count in counts.items())
+    return "；".join(f"{date} {count} 篇" for date, count in counts.items())
 
 
 def html_escape(value: Any) -> str:
@@ -1475,6 +1835,9 @@ def render_html(
         no_match_text = f"No matching updates in the last {days} days"
         report_date_label = "Report date"
         window_label = "Search window"
+        date_distribution_label = "Date distribution"
+        date_section_label = "Updated date"
+        paper_count_suffix = "records"
         footer_text = "Data source: arXiv API. Records are deduplicated by arXiv ID and filtered by the arXiv updated timestamp. Please verify the original paper before formal citation."
     elif language == "bilingual":
         highlights_title = "今日重点 / Highlights"
@@ -1486,6 +1849,9 @@ def render_html(
         no_match_text = f"近 {days} 天无匹配更新 / No matching updates in the last {days} days"
         report_date_label = "报告日期 / Report date"
         window_label = "检索窗口 / Search window"
+        date_distribution_label = "日期分布 / Date distribution"
+        date_section_label = "更新日期 / Updated date"
+        paper_count_suffix = "篇"
         footer_text = "数据源：arXiv API。记录按 arXiv ID 去重并按 arXiv updated 字段过滤；正式引用前请打开原文核对。 / Data source: arXiv API. Verify the original paper before formal citation."
     else:
         highlights_title = "今日重点"
@@ -1497,11 +1863,23 @@ def render_html(
         no_match_text = "近五天无匹配更新"
         report_date_label = "报告日期"
         window_label = "检索窗口"
+        date_distribution_label = "日期分布"
+        date_section_label = "更新日期"
+        paper_count_suffix = "篇"
         footer_text = "数据源：arXiv API。记录按 arXiv ID 去重；更新时间使用 arXiv updated 字段过滤。中文要点由本地规则基于题名与摘要自动提取，正式引用前请打开原文核对。"
     window_start = metadata_datetime(report_metadata, "window_start") or as_of - dt.timedelta(days=days)
     window_end = metadata_datetime(report_metadata, "window_end") or as_of
     period_extra_html = render_report_metadata_html(report_metadata, language)
     counts = topic_counts(records)
+    date_distribution = record_date_counts(records)
+    date_distribution_text = format_date_distribution(date_distribution, language)
+    date_distribution_html = (
+        f'<p class="muted date-counts"><b>{html_escape(date_distribution_label)}:</b> {html_escape(date_distribution_text)}</p>'
+        if language == "en" and date_distribution_text
+        else f'<p class="muted date-counts"><b>{html_escape(date_distribution_label)}：</b>{html_escape(date_distribution_text)}</p>'
+        if date_distribution_text
+        else ""
+    )
     highlights = sorted(records, key=lambda item: (item.get("score", 0), item["updated_local"]), reverse=True)[:5]
 
     highlight_html = (
@@ -1518,28 +1896,42 @@ def render_html(
         else f"<li>{html_escape(no_match_text)}。</li>"
     )
 
-    grouped: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+    grouped_by_date: dict[str, list[tuple[int, dict[str, Any]]]] = {}
     for index, record in enumerate(records, start=1):
-        grouped.setdefault(primary_topic(record), []).append((index, record))
+        grouped_by_date.setdefault(record_date_label(record), []).append((index, record))
 
     grouped_html = ""
-    topic_render_order = PRIMARY_TOPIC_ORDER + [
-        topic for topic in grouped if topic not in set(PRIMARY_TOPIC_ORDER + ["其他相关文献"])
-    ] + ["其他相关文献"]
-    for topic in topic_render_order:
-        papers = grouped.get(topic, [])
-        if not papers:
-            continue
-        cards = "\n".join(render_paper_card(record, index, language) for index, record in papers)
+    topic_base_order = PRIMARY_TOPIC_ORDER + [TOPIC_OTHER]
+    for date_label in sorted(grouped_by_date, reverse=True):
+        day_papers = grouped_by_date[date_label]
+        grouped_by_topic: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+        for index, record in day_papers:
+            grouped_by_topic.setdefault(primary_topic(record), []).append((index, record))
+
+        topic_render_order = topic_base_order + [
+            topic for topic in grouped_by_topic if topic not in set(topic_base_order)
+        ]
+        topic_sections = ""
+        for topic in topic_render_order:
+            papers = grouped_by_topic.get(topic, [])
+            if not papers:
+                continue
+            cards = "\n".join(render_paper_card(record, index, language) for index, record in papers)
+            topic_sections += f"""
+          <div class="topic-section">
+            <h3 class="topic-heading">{html_escape(topic)} <small>{len(papers)} {html_escape(paper_count_suffix)}</small></h3>
+            {cards}
+          </div>
+            """
         grouped_html += f"""
-        <section class="topic-section">
-          <h2>{html_escape(topic)} <small>{len(papers)} 篇</small></h2>
-          {cards}
+        <section class="date-section">
+          <h2>{html_escape(date_section_label)}：{html_escape(date_label)} <small>{len(day_papers)} {html_escape(paper_count_suffix)}</small></h2>
+          {topic_sections}
         </section>
         """
 
     if not grouped_html:
-        grouped_html = """
+        grouped_html = f"""
         <section class="empty">
           <h2>{html_escape(no_match_text)}</h2>
           <p>{html_escape(no_match_text)}。</p>
@@ -1681,8 +2073,23 @@ def render_html(
     .highlights small {{
       display: block;
     }}
+    .date-counts {{
+      margin: 14px 0 0;
+    }}
+    .date-section {{
+      margin-top: 34px;
+    }}
+    .date-section > h2 {{
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 8px;
+    }}
     .topic-section {{
-      margin-top: 28px;
+      margin-top: 20px;
+    }}
+    .topic-heading {{
+      color: var(--accent);
+      font-size: 20px;
+      margin: 18px 0 10px;
     }}
     .paper {{
       margin: 14px 0;
@@ -1814,6 +2221,7 @@ def render_html(
           <li><b>{html_escape(total_label)}</b><span>{len(records)}</span></li>
           {count_items}
         </ul>
+        {date_distribution_html}
       </div>
     </section>
     {errors_html}
@@ -1849,6 +2257,7 @@ def make_briefing(
     report_date = as_of.strftime("%Y-%m-%d")
     label = report_label(days, report_kind)
     metadata_lines = briefing_metadata_lines(report_metadata, language)
+    date_distribution_text = format_date_distribution(record_date_counts(records), language)
     if language == "en":
         en_label = "weekly report" if label == "周报" else "daily report"
         if not records:
@@ -1868,6 +2277,8 @@ def make_briefing(
             for index, record in enumerate(top, start=1):
                 lines.append(f"{index}. {record['title']} (arXiv:{record['arxiv_id']})")
             lines.append(f"HTML report: {html_path}")
+        if date_distribution_text and records:
+            lines.insert(1, f"Date distribution: {date_distribution_text}.")
         if errors:
             lines.append("Warnings: " + " | ".join(errors))
         if publication_updates:
@@ -1909,6 +2320,8 @@ def make_briefing(
             for index, record in enumerate(top, start=1):
                 lines.append(f"{index}. {record['title']} (arXiv:{record['arxiv_id']})")
             lines.append(f"HTML 报告 / HTML report: {html_path}")
+        if date_distribution_text and records:
+            lines.insert(1, f"日期分布 / Date distribution: {date_distribution_text}.")
         if errors:
             lines.append("检索警告 / Warnings: " + " | ".join(errors))
         if publication_updates:
@@ -1953,6 +2366,8 @@ def make_briefing(
         for index, record in enumerate(top, start=1):
             lines.append(f"{index}. {record['title']} (arXiv:{record['arxiv_id']})")
         lines.append(f"HTML 报告：{html_path}")
+    if date_distribution_text and records:
+        lines.insert(1, f"日期分布：{date_distribution_text}。")
     if errors and not records:
         lines.insert(1, "检索未完成：本次结果不应视为真实空结果。")
     if errors:
@@ -2009,6 +2424,7 @@ def serializable_report(
         "queries": queries or TOPICS,
         "topics": TOPICS,
         "topic_counts": topic_counts(records),
+        "date_counts": record_date_counts(records),
         "total_records": len(records),
         "skipped_seen_records": skipped_seen_count,
         "publication_updates": publication_updates,

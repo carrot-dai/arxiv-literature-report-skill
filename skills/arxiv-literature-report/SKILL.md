@@ -61,6 +61,8 @@ For a normal week, write the full summary to `outputs/arxiv_literature_reports/Y
 
 For a cross-month week, write one `arxiv_literature_weekly_segment_SEGMENT-START_to_SEGMENT-END.*` into each month folder and write the full-week `arxiv_literature_weekly_summary_WEEK-START_to_WEEK-END.*` only in the Sunday month. Weekly reports merge seen and summary override files from all touched months but never write seen state; daily reports remain responsible for seen-state updates.
 
+Daily and weekly reports must expose date partitioning in the content, not only in filenames: TXT/JSON/HTML include `date_counts`, HTML shows a date distribution summary, and paper cards render under updated-date sections before topic subsections.
+
 ## Parameters
 
 - `--config`: JSON config file with defaults and named profiles.
@@ -100,7 +102,7 @@ Use `nature-reader` for intensive reading, full translation, figure-by-figure ex
 
 Use `nature-polishing` for polished academic abstracts or Nature-style wording.
 
-Default report cards already include a lightweight `nature-reader` + `nature-polishing` style digest from the arXiv abstract: source-grounded Chinese reading summary, key takeaways, polished English guide, and the full English abstract. Use the full `nature-reader` workflow only when the user asks for a complete paper reader, PDF translation, figure-aware reading, or bilingual HTML.
+Default report cards already include a lightweight `nature-reader` + `nature-polishing` style digest from the arXiv abstract: source-grounded Chinese reading summary, key takeaways, polished English guide, and the full English abstract. This digest should identify the abstract's problem, evidence/approach, and result/implication sentences; do not fall back to a keyword-only template or invent claims. Use the full `nature-reader` workflow only when the user asks for a complete paper reader, PDF translation, figure-aware reading, or bilingual HTML.
 
 Use `nature-academic-search` for DOI, CrossRef, PubMed, citation, or publication verification beyond arXiv metadata.
 
@@ -108,4 +110,4 @@ Use `nature-paper2ppt` for group-meeting or journal-club PPTX decks.
 
 ## Failure handling
 
-If arXiv returns transient 429/503 errors, rely on the script retry behavior. If the run still exits with warnings or errors, report the warning text and any generated paths.
+If arXiv returns transient 429/503 errors, rely on the script retry behavior first. If the API remains rate-limited, the script should use the official arXiv OAI fallback and strictly filter the broad OAI category scan back to the requested polariton/TMD/plasmonics/cavity scope. If the run still exits with warnings or errors, report the warning text and any generated paths.

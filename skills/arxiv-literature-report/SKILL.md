@@ -92,6 +92,8 @@ Use `nature-reader` for intensive reading, full translation, figure-by-figure ex
 
 Use `nature-polishing` for polished academic abstracts or Nature-style wording.
 
+Default report cards already include a lightweight `nature-reader` + `nature-polishing` style digest from the arXiv abstract: source-grounded Chinese reading summary, key takeaways, polished English guide, and the full English abstract. Use the full `nature-reader` workflow only when the user asks for a complete paper reader, PDF translation, figure-aware reading, or bilingual HTML.
+
 Use `nature-academic-search` for DOI, CrossRef, PubMed, citation, or publication verification beyond arXiv metadata.
 
 Use `nature-paper2ppt` for group-meeting or journal-club PPTX decks.
@@ -99,4 +101,3 @@ Use `nature-paper2ppt` for group-meeting or journal-club PPTX decks.
 ## Failure handling
 
 If arXiv returns transient 429/503 errors, rely on the script retry behavior. If the run still exits with warnings or errors, report the warning text and any generated paths.
-

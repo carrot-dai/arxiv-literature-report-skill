@@ -13,6 +13,7 @@ import argparse
 import copy
 import datetime as dt
 import html
+import http.client
 import json
 import re
 import sys
@@ -151,6 +152,113 @@ DEFAULT_TRACK_ARTICLES = [
     }
 ]
 
+
+TOPIC_EXCITON = "激子极化激元"
+TOPIC_TMD = "二维/TMD 材料研究"
+TOPIC_PEROVSKITE = "钙钛矿极化激元"
+TOPIC_PLASMONICS = "等离激元/等离激元学"
+TOPIC_MICROCAVITY = "微腔与腔光子学"
+TOPIC_PHOTONIC_CRYSTAL = "光子晶体腔"
+TOPIC_OTHER = "其他相关文献"
+
+TOPICS = [
+    {
+        "key": "exciton",
+        "name": TOPIC_EXCITON,
+        "query": (
+            'all:"exciton polariton" OR all:"exciton-polariton" OR '
+            'all:"polaritonic condensate" OR all:"microcavity polariton"'
+        ),
+    },
+    {
+        "key": "tmd",
+        "name": TOPIC_TMD,
+        "query": (
+            '(all:TMDC OR all:"transition metal dichalcogenide" OR '
+            'all:MoS2 OR all:MoSe2 OR all:WS2 OR all:WSe2 OR all:MoTe2 OR '
+            'all:"moiré WSe2" OR all:"moire WSe2" OR all:"twisted WSe2" OR '
+            'all:"moiré semiconductor" OR all:"moire semiconductor")'
+        ),
+    },
+    {
+        "key": "perovskite",
+        "name": TOPIC_PEROVSKITE,
+        "query": (
+            '(all:perovskite OR all:"halide perovskite" OR '
+            'all:"lead halide perovskite") AND '
+            '(all:polariton OR all:polaritons OR all:polaritonic OR all:"strong coupling")'
+        ),
+    },
+    {
+        "key": "plasmonics",
+        "name": TOPIC_PLASMONICS,
+        "query": (
+            'all:plasmon OR all:plasmons OR all:plasmonic OR '
+            'all:"surface plasmon polariton" OR all:"surface plasmon-polariton" OR '
+            'all:SPP OR all:"localized surface plasmon" OR all:nanoplasmonic'
+        ),
+    },
+    {
+        "key": "microcavity",
+        "name": TOPIC_MICROCAVITY,
+        "query": (
+            'all:microcavity OR all:"optical microcavity" OR all:"planar microcavity" OR '
+            'all:"Fabry-Perot cavity" OR all:"Fabry Perot cavity" OR '
+            'all:"whispering-gallery mode" OR all:"whispering gallery mode"'
+        ),
+    },
+    {
+        "key": "photonic-crystal-cavity",
+        "name": TOPIC_PHOTONIC_CRYSTAL,
+        "query": (
+            'all:"photonic crystal cavity" OR all:"photonic crystal nanocavity" OR '
+            'all:nanocavity OR all:"nanobeam cavity" OR all:"L3 cavity" OR '
+            'all:"photonic crystal resonator"'
+        ),
+    },
+]
+
+TOPIC_ORDER = [topic["name"] for topic in TOPICS]
+PRIMARY_TOPIC_ORDER = [
+    TOPIC_TMD,
+    TOPIC_PEROVSKITE,
+    TOPIC_EXCITON,
+    TOPIC_PLASMONICS,
+    TOPIC_MICROCAVITY,
+    TOPIC_PHOTONIC_CRYSTAL,
+]
+
+DEFAULT_FIELD_NAME = "arXiv 极化激元、等离激元、微腔/光子晶体腔与二维材料"
+
+MATERIAL_PATTERNS = [
+    (r"\bMoS2\b|MoS鈧?", "MoS2"),
+    (r"\bMoSe2\b|MoSe鈧?", "MoSe2"),
+    (r"\bWS2\b|WS鈧?", "WS2"),
+    (r"\bWSe2\b|WSe鈧?", "WSe2"),
+    (r"\bMoTe2\b|MoTe鈧?", "MoTe2"),
+    (r"\bTMD\b|\bTMDC\b|transition metal dichalcogenide", "TMD/TMDC"),
+    (r"monolayer|bilayer|heterobilayer|van der Waals|2D material", "二维材料"),
+    (r"perovskite|halide perovskite|lead halide", "钙钛矿"),
+    (r"organic", "有机半导体"),
+    (r"plasmon|plasmonic|SPP|surface plasmon", "等离激元"),
+    (r"microcavity|cavity|Fabry|whispering[- ]gallery", "微腔"),
+    (r"photonic crystal|nanocavity|nanobeam cavity|L3 cavity", "光子晶体腔"),
+]
+
+PHENOMENA_PATTERNS = [
+    (r"exciton[- ]polariton|exciton polariton", "激子极化激元"),
+    (r"polariton condens|polaritonic condens|Bose[- ]Einstein", "极化激元凝聚"),
+    (r"strong coupling", "强耦合"),
+    (r"Rabi", "Rabi 劈裂/振荡"),
+    (r"plasmon|plasmonic|surface plasmon|localized surface plasmon|SPP", "等离激元模式"),
+    (r"photonic crystal|nanocavity|nanobeam cavity|L3 cavity", "光子晶体腔模"),
+    (r"moir[e茅é]", "莫尔势/莫尔激子"),
+    (r"valley", "谷自由度"),
+    (r"topolog", "拓扑性质"),
+    (r"nonlinear|non-linearity|nonlinearity", "非线性光学"),
+    (r"lasing|laser", "激射/激光"),
+    (r"transport|flow|propagation", "输运/传播"),
+]
 
 def combined_search_query() -> str:
     return " OR ".join(f"({topic['query']})" for topic in TOPICS)
@@ -450,6 +558,312 @@ def join_cn(items: list[str]) -> str:
     return "、".join(items)
 
 
+def join_cn(items: list[str]) -> str:
+    cleaned = [item for item in items if item]
+    if not cleaned:
+        return "未明确标注"
+    if len(cleaned) == 1:
+        return cleaned[0]
+    return "、".join(cleaned)
+
+
+def is_polariton_like(text: str) -> bool:
+    return bool(
+        re.search(
+            r"polariton|polaritonic|strong coupling|microcavity polariton|Rabi",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def is_plasmonics_like(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\bplasmon(s|ic)?\b|surface plasmon polariton|surface plasmon-polariton|"
+            r"localized surface plasmon|\bSPP\b|nanoplasmonic",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def is_microcavity_like(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\bmicrocavit(y|ies)\b|optical microcavity|planar microcavity|"
+            r"Fabry[- ]Perot cavity|whispering[- ]gallery mode",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def is_photonic_crystal_cavity_like(text: str) -> bool:
+    return bool(
+        re.search(
+            r"photonic crystal cavity|photonic crystal nanocavity|"
+            r"\bnanocavit(y|ies)\b|nanobeam cavity|\bL3 cavity\b|photonic crystal resonator",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def infer_topics(record: dict[str, Any]) -> list[str]:
+    text = f"{record['title']} {record['summary']}"
+    topics: list[str] = []
+    polariton_like = is_polariton_like(text)
+    if polariton_like:
+        topics.append(TOPIC_EXCITON)
+    if is_2d_tmd_material(text):
+        topics.append(TOPIC_TMD)
+    if polariton_like and re.search(
+        r"perovskite|halide perovskite|lead halide",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        topics.append(TOPIC_PEROVSKITE)
+    if is_plasmonics_like(text):
+        topics.append(TOPIC_PLASMONICS)
+    if is_microcavity_like(text):
+        topics.append(TOPIC_MICROCAVITY)
+    if is_photonic_crystal_cavity_like(text):
+        topics.append(TOPIC_PHOTONIC_CRYSTAL)
+    return topics
+
+
+def score_record(record: dict[str, Any]) -> int:
+    text = f"{record['title']} {record['summary']}".lower()
+    score = 0
+    weights = {
+        "exciton polariton": 6,
+        "exciton-polariton": 6,
+        "polariton condens": 8,
+        "strong coupling": 5,
+        "rabi": 4,
+        "microcavity": 4,
+        "photonic crystal cavity": 5,
+        "photonic crystal nanocavity": 5,
+        "nanocavity": 4,
+        "plasmon": 5,
+        "plasmonic": 5,
+        "surface plasmon polariton": 6,
+        "localized surface plasmon": 5,
+        "spp": 4,
+        "monolayer": 4,
+        "bilayer": 3,
+        "moire": 5,
+        "moiré": 5,
+        "perovskite": 5,
+        "wse2": 5,
+        "mose2": 5,
+        "mos2": 4,
+        "ws2": 4,
+        "room temperature": 4,
+        "topological": 3,
+        "nonlinear": 3,
+        "lasing": 3,
+    }
+    for term, weight in weights.items():
+        if term in text:
+            score += weight
+    score += 2 * len(record.get("topics", []))
+    return score
+
+
+def abstract_sentences(text: str) -> list[str]:
+    normalized = normalize_space(text)
+    if not normalized:
+        return []
+    sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9(])", normalized)
+    return [sentence.strip() for sentence in sentences if sentence.strip()]
+
+
+def infer_paper_type(text: str) -> str:
+    lowered = text.lower()
+    if any(word in lowered for word in ["review", "perspective", "roadmap"]):
+        return "review or perspective"
+    if any(word in lowered for word in ["method", "algorithm", "framework", "tool", "platform"]):
+        return "methods or platform paper"
+    if any(word in lowered for word in ["demonstrate", "observe", "realize", "fabricat", "experiment"]):
+        return "experimental study"
+    if any(word in lowered for word in ["theory", "model", "calculate", "simulation", "predict"]):
+        return "theoretical or computational study"
+    return "research preprint"
+
+
+TERM_EN = {
+    TOPIC_EXCITON: "exciton polaritons",
+    TOPIC_TMD: "two-dimensional and TMD materials",
+    TOPIC_PEROVSKITE: "perovskite polaritons",
+    TOPIC_PLASMONICS: "plasmonics",
+    TOPIC_MICROCAVITY: "microcavity photonics",
+    TOPIC_PHOTONIC_CRYSTAL: "photonic crystal cavities",
+    "二维材料": "two-dimensional materials",
+    "钙钛矿": "perovskites",
+    "有机半导体": "organic semiconductors",
+    "等离激元": "plasmonic systems",
+    "微腔": "microcavities",
+    "光子晶体腔": "photonic crystal cavities",
+    "激子极化激元": "exciton polaritons",
+    "极化激元凝聚": "polariton condensation",
+    "强耦合": "strong coupling",
+    "Rabi 劈裂/振荡": "Rabi splitting or oscillations",
+    "等离激元模式": "plasmonic modes",
+    "光子晶体腔模": "photonic crystal cavity modes",
+    "莫尔势/莫尔激子": "moiré potentials or moiré excitons",
+    "谷自由度": "valley degrees of freedom",
+    "拓扑性质": "topological properties",
+    "非线性光学": "nonlinear optics",
+    "激射/激光": "lasing or laser emission",
+    "输运/传播": "transport or propagation",
+    "光致发光": "photoluminescence",
+    "角分辨光谱": "angle-resolved spectroscopy",
+    "反射/反射率谱": "reflectance spectroscopy",
+    "光谱测量": "spectroscopy",
+    "超快/时间分辨测量": "ultrafast or time-resolved measurements",
+    "理论建模": "theoretical modelling",
+    "数值模拟": "numerical simulation",
+    "第一性原理/DFT": "first-principles or DFT calculations",
+    "实验观测": "experimental observation",
+    "器件制备": "device fabrication",
+    "题名/摘要中的理论或实验分析": "theoretical or experimental analysis described in the title or abstract",
+}
+
+
+def terms_en(items: list[str], fallback: str) -> str:
+    translated: list[str] = []
+    for item in items:
+        value = TERM_EN.get(item)
+        if value is None and item.isascii():
+            value = item
+        if value and value not in translated:
+            translated.append(value)
+    return ", ".join(translated) if translated else fallback
+
+
+def polished_english_digest(record: dict[str, Any], materials: list[str], phenomena: list[str], methods: list[str]) -> str:
+    sentences = abstract_sentences(record.get("summary", ""))
+    first = sentences[0] if sentences else record.get("title", "")
+    final = sentences[-1] if len(sentences) > 1 else ""
+    paper_type = infer_paper_type(f"{record.get('title', '')} {record.get('summary', '')}")
+    topic_text = terms_en(record.get("topics", [])[:3], "the target research area")
+    system_text = terms_en(materials[:3], "the reported material or photonic platform")
+    phenomena_text = terms_en(phenomena[:3], "the relevant light-matter interaction")
+    method_text = terms_en(methods[:3], "")
+    parts = [
+        f"This {paper_type} is relevant to {topic_text}.",
+        f"It centers on {system_text} and examines {phenomena_text}.",
+    ]
+    if method_text:
+        parts.append(f"The evidence base is mainly associated with {method_text}.")
+    if first:
+        parts.append(f"The central problem, as stated in the abstract, is: {first}")
+    if final and final != first:
+        parts.append(f"The concluding implication is: {final}")
+    return " ".join(parts)
+
+
+def chinese_reader_summary(record: dict[str, Any], materials: list[str], phenomena: list[str], methods: list[str]) -> str:
+    sentences = abstract_sentences(record.get("summary", ""))
+    opening = sentences[0] if sentences else record.get("title", "")
+    ending = sentences[-1] if len(sentences) > 1 else ""
+    paper_type_map = {
+        "review or perspective": "综述/观点型预印本",
+        "methods or platform paper": "方法或平台型预印本",
+        "experimental study": "实验研究型预印本",
+        "theoretical or computational study": "理论或计算研究型预印本",
+        "research preprint": "研究型预印本",
+    }
+    paper_type = paper_type_map.get(infer_paper_type(f"{record.get('title', '')} {record.get('summary', '')}"), "研究型预印本")
+    summary = (
+        f"这是一篇{paper_type}。从 arXiv 摘要看，文章围绕 {join_cn(materials[:4])} 中的"
+        f"{join_cn(phenomena[:4])}展开，主要证据或分析路径包括 {join_cn(methods[:4])}。"
+    )
+    if opening:
+        summary += f" 摘要开篇强调的问题是：{opening}"
+    if ending and ending != opening:
+        summary += f" 摘要最后给出的意义或边界是：{ending}"
+    return summary
+
+
+def key_takeaways_cn(record: dict[str, Any], materials: list[str], phenomena: list[str], methods: list[str]) -> str:
+    topics = set(record.get("topics", []))
+    focus: list[str] = []
+    if TOPIC_PLASMONICS in topics:
+        focus.append("近场增强、模式约束、损耗和可集成性")
+    if TOPIC_MICROCAVITY in topics:
+        focus.append("腔模设计、强耦合判据和器件实现条件")
+    if TOPIC_PHOTONIC_CRYSTAL in topics:
+        focus.append("高 Q、小模体积、片上耦合和量子光学适配性")
+    if TOPIC_EXCITON in topics:
+        focus.append("Rabi 劈裂、凝聚、相干输运或非线性响应")
+    if TOPIC_TMD in topics:
+        focus.append("二维材料、谷/莫尔自由度和片上耦合")
+    if TOPIC_PEROVSKITE in topics:
+        focus.append("室温工作、低阈值和材料可加工性")
+    points = [
+        f"研究对象：{join_cn(materials[:4])}",
+        f"核心物理：{join_cn(phenomena[:4])}",
+        f"证据路径：{join_cn(methods[:4])}",
+    ]
+    if focus:
+        points.append(f"阅读重点：{join_cn(focus)}")
+    return "；".join(points) + "。"
+
+
+def build_cn_fields(record: dict[str, Any]) -> dict[str, str]:
+    text = f"{record['title']} {record['summary']}"
+    materials = term_list(text, MATERIAL_PATTERNS, "激子-光场耦合体系")
+    phenomena = term_list(text, PHENOMENA_PATTERNS, "光场耦合相关现象")
+    methods = term_list(text, METHOD_PATTERNS, "题名/摘要中的理论或实验分析")
+    topics = set(record.get("topics", []))
+    summary = chinese_reader_summary(record, materials, phenomena, methods)
+    contribution = polished_english_digest(record, materials, phenomena, methods)
+    why_parts: list[str] = []
+    if TOPIC_TMD in topics:
+        why_parts.append("可为二维半导体、谷/莫尔激子与片上耦合器件提供参考")
+    if TOPIC_PEROVSKITE in topics:
+        why_parts.append("有助于跟踪室温、低阈值或可加工极化激元平台")
+    if TOPIC_EXCITON in topics:
+        why_parts.append("对微腔极化激元凝聚、相干、输运或非线性研究有参考价值")
+    if TOPIC_PLASMONICS in topics:
+        why_parts.append("适合跟踪纳米尺度强场约束、近场增强与表面波导方向")
+    if TOPIC_MICROCAVITY in topics:
+        why_parts.append("有助于跟踪腔模设计、强耦合实现和器件集成路线")
+    if TOPIC_PHOTONIC_CRYSTAL in topics:
+        why_parts.append("适合关注高 Q 小模体积腔增强和片上量子光学平台")
+    why = "；".join(why_parts) + "。" if why_parts else "适合作为本方向的近期候选文献。"
+    return {
+        "summary_cn": summary,
+        "contribution_cn": contribution,
+        "materials_cn": join_cn(materials[:6]),
+        "methods_cn": join_cn(methods[:6]),
+        "why_it_matters_cn": why,
+        "full_abstract_en": normalize_space(record.get("summary", "")),
+        "polished_abstract_en": contribution,
+        "key_takeaways_cn": key_takeaways_cn(record, materials, phenomena, methods),
+        "paper_type": infer_paper_type(text),
+    }
+
+
+def primary_topic(record: dict[str, Any]) -> str:
+    topics = record.get("topics", [])
+    for topic in PRIMARY_TOPIC_ORDER:
+        if topic in topics:
+            return topic
+    return topics[0] if topics else TOPIC_OTHER
+
+
+def topic_counts(records: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {topic: 0 for topic in TOPIC_ORDER}
+    for record in records:
+        for topic in record.get("topics", []):
+            counts[topic] = counts.get(topic, 0) + 1
+    return counts
+
+
 def retry_delay(headers: Any, attempt: int, base_seconds: float) -> float:
     retry_after = headers.get("Retry-After") if headers else None
     if retry_after and retry_after.isdigit():
@@ -491,6 +905,11 @@ def fetch_page(
             if attempt == retry_attempts - 1:
                 raise ArxivRateLimitError(f"arXiv API returned HTTP {exc.code}.") from exc
             delay = retry_delay(exc.headers, attempt, retry_base_seconds)
+            time.sleep(delay)
+        except http.client.IncompleteRead:
+            if attempt == retry_attempts - 1:
+                raise
+            delay = retry_delay(None, attempt, retry_base_seconds)
             time.sleep(delay)
         except ArxivRateLimitError:
             if attempt == retry_attempts - 1:
@@ -762,6 +1181,98 @@ def render_paper_card(record: dict[str, Any], index: int, language: str = "zh") 
         {insight_html}
       </div>
       {details_html}
+    </article>
+    """
+
+
+def render_paper_card(record: dict[str, Any], index: int, language: str = "zh") -> str:
+    authors = ", ".join(record.get("authors", [])[:12])
+    if len(record.get("authors", [])) > 12:
+        authors += " et al."
+    tags = "".join(f"<span>{html_escape(topic)}</span>" for topic in record.get("topics", []))
+    categories = ", ".join(record.get("categories", []))
+    pdf_link = (
+        f'<a href="{html_escape(record["pdf_url"])}" target="_blank" rel="noopener">PDF</a>'
+        if record.get("pdf_url")
+        else ""
+    )
+    doi_line = f"<p><b>DOI:</b> {html_escape(record['doi'])}</p>" if record.get("doi") else ""
+    comment_line = (
+        f"<p><b>Comment:</b> {html_escape(record['comment'])}</p>" if record.get("comment") else ""
+    )
+    full_abstract_en = record.get("full_abstract_en") or record.get("summary", "")
+    polished_abstract_en = record.get("polished_abstract_en") or record.get("contribution_cn", "")
+    key_takeaways_cn = record.get("key_takeaways_cn") or record.get("why_it_matters_cn", "")
+
+    if language == "en":
+        insight_html = f"""
+        <p><b>Polished English guide:</b> {html_escape(polished_abstract_en)}</p>
+        <p><b>Full English abstract:</b> {html_escape(full_abstract_en)}</p>
+        {doi_line}
+        {comment_line}
+        <details>
+          <summary>Chinese notes</summary>
+          <p><b>中文精读摘要：</b>{html_escape(record['summary_cn'])}</p>
+          <p><b>重点提炼：</b>{html_escape(key_takeaways_cn)}</p>
+          <p><b>Materials/system：</b>{html_escape(record['materials_cn'])}</p>
+          <p><b>Methods/evidence：</b>{html_escape(record['methods_cn'])}</p>
+          <p><b>Why it matters：</b>{html_escape(record['why_it_matters_cn'])}</p>
+        </details>
+        """
+    elif language == "bilingual":
+        insight_html = f"""
+        <div class="bilingual-summary">
+          <div>
+            <p><b>Polished English guide:</b> {html_escape(polished_abstract_en)}</p>
+            <p><b>Full English abstract:</b> {html_escape(full_abstract_en)}</p>
+          </div>
+          <div>
+            <p><b>中文精读摘要：</b>{html_escape(record['summary_cn'])}</p>
+            <p><b>重点提炼：</b>{html_escape(key_takeaways_cn)}</p>
+            <p><b>材料/体系：</b>{html_escape(record['materials_cn'])}</p>
+            <p><b>方法/证据：</b>{html_escape(record['methods_cn'])}</p>
+            <p><b>为什么值得看：</b>{html_escape(record['why_it_matters_cn'])}</p>
+          </div>
+        </div>
+        {doi_line}
+        {comment_line}
+        """
+    else:
+        insight_html = f"""
+        <p><b>中文精读摘要：</b>{html_escape(record['summary_cn'])}</p>
+        <p><b>重点提炼：</b>{html_escape(key_takeaways_cn)}</p>
+        <p><b>润色英文导读：</b>{html_escape(polished_abstract_en)}</p>
+        <p><b>完整英文摘要：</b>{html_escape(full_abstract_en)}</p>
+        <p><b>材料/体系：</b>{html_escape(record['materials_cn'])}</p>
+        <p><b>方法/证据：</b>{html_escape(record['methods_cn'])}</p>
+        <p><b>为什么值得看：</b>{html_escape(record['why_it_matters_cn'])}</p>
+        {doi_line}
+        {comment_line}
+        """
+
+    return f"""
+    <article class="paper" id="paper-{index}">
+      <div class="paper-top">
+        <div class="rank">{index}</div>
+        <div>
+          <h3>{html_escape(record['title'])}</h3>
+          <div class="tags">{tags}</div>
+        </div>
+      </div>
+      <p class="authors">{html_escape(authors)}</p>
+      <div class="meta">
+        <span>arXiv: {html_escape(record['arxiv_id'])}</span>
+        <span>Updated: {html_escape(record['updated_local'][:10])}</span>
+        <span>Primary: {html_escape(record.get('primary_category', ''))}</span>
+        <span>Categories: {html_escape(categories)}</span>
+      </div>
+      <div class="links">
+        <a href="{html_escape(record['abs_url'])}" target="_blank" rel="noopener">arXiv</a>
+        {pdf_link}
+      </div>
+      <div class="insight">
+        {insight_html}
+      </div>
     </article>
     """
 

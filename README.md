@@ -1,5 +1,19 @@
 # arXiv Literature Report Skill
 
+## Current default coverage
+
+The built-in polariton profile now searches and classifies exciton polaritons, 2D/TMD systems, perovskite polaritons, plasmonics, optical microcavities, and photonic crystal cavities.
+
+Every report card includes a lightweight `nature-reader` + `nature-polishing` style digest based on the arXiv abstract:
+
+- Chinese reading summary
+- key takeaways
+- polished English guide
+- full English abstract
+- materials/systems, methods/evidence, and why-it-matters notes
+
+The daily and weekly automation remains source-grounded to arXiv metadata. Full-paper bilingual readers, figure extraction, and page-level source maps should still be generated through the separate `nature-reader` workflow when a paper needs intensive reading.
+
 一个可配置的 arXiv 文献日报/周报生成器，同时提供 Python CLI 和 Codex skill。它可以按用户指定的研究领域检索 arXiv，基于更新时间窗口去重，生成 HTML、JSON 和 TXT 报告，并长期追踪重点课题组或重点论文的发表状态。
 
 默认示例面向“极化激元 + 2D/TMD + 钙钛矿极化激元”方向，并内置 Mak-Shan 通讯团队追踪模板；你也可以不用改 Python 代码，直接通过 JSON 配置换成自己的领域，例如 WSe2 superconductivity、二维磁性材料、perovskite polariton、LLM agents 等。

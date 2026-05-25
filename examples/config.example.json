@@ -12,7 +12,7 @@
   },
   "profiles": {
     "polariton_tmd": {
-      "field_name": "arXiv polariton and 2D/TMD materials",
+      "field_name": "arXiv polariton, plasmonics, microcavity/photonic crystal cavities, and 2D/TMD materials",
       "report_kind": "weekly",
       "days": 7,
       "language": "zh",
@@ -49,4 +49,3 @@
     }
   }
 }
-

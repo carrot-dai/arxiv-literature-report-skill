@@ -53,13 +53,21 @@ Network-free smoke test:
 arxiv-literature-report --empty-fixture --report-kind weekly --language zh
 ```
 
+## Fixed Weekly Archives
+
+Weekly reports use Asia/Shanghai natural weeks: Monday 00:00 through the following Monday 00:00, displayed as Monday to Sunday. `--report-kind weekly` ignores `--days` for the actual weekly window; keep `--days` only for compatibility with old configs.
+
+For a normal week, write the full summary to `outputs/arxiv_literature_reports/YYYY/MM/周报/YYYY-MM-DD_to_YYYY-MM-DD/arxiv_literature_weekly_summary_YYYY-MM-DD_to_YYYY-MM-DD.*`.
+
+For a cross-month week, write one `arxiv_literature_weekly_segment_SEGMENT-START_to_SEGMENT-END.*` into each month folder and write the full-week `arxiv_literature_weekly_summary_WEEK-START_to_WEEK-END.*` only in the Sunday month. Weekly reports merge seen and summary override files from all touched months but never write seen state; daily reports remain responsible for seen-state updates.
+
 ## Parameters
 
 - `--config`: JSON config file with defaults and named profiles.
 - `--profile`: profile key inside the config file.
 - `--field-name`: human-readable field name used in titles and JSON metadata.
 - `--query`: custom arXiv API query. Can be repeated.
-- `--days`: arXiv updated-date window.
+- `--days`: arXiv updated-date window for daily reports. Weekly reports always use the fixed Monday-Sunday natural week.
 - `--language zh|en|bilingual`: report language. Default is `zh`.
 - `--report-kind auto|daily|weekly`: output folder and report labeling.
 - `--track-group`: update `outputs/arxiv_literature_reports/group_tracking/<group-name>/`.
@@ -73,7 +81,7 @@ Reports write to:
 
 ```text
 outputs/arxiv_literature_reports/YYYY/MM/日报/
-outputs/arxiv_literature_reports/YYYY/MM/周报/
+outputs/arxiv_literature_reports/YYYY/MM/周报/YYYY-MM-DD_to_YYYY-MM-DD/
 ```
 
 Research-group tracking writes to:

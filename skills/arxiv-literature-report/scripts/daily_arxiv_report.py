@@ -32,6 +32,8 @@ SEEN_STATE_FILENAME = "arxiv_literature_seen_ids.json"
 SUMMARY_STATE_FILENAME = "arxiv_literature_cn_summaries.json"
 CHINA_TZ = dt.timezone(dt.timedelta(hours=8), "Asia/Shanghai")
 UTC = dt.timezone.utc
+DAILY_SUBDIR = "\u65e5\u62a5"
+WEEKLY_SUBDIR = "\u5468\u62a5"
 ATOM = "{http://www.w3.org/2005/Atom}"
 ARXIV = "{http://arxiv.org/schemas/atom}"
 RATE_LIMIT_BODY = "rate exceeded"
@@ -534,7 +536,14 @@ def build_cn_fields(record: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def load_summary_overrides(path: str | Path) -> dict[str, str]:
+def load_summary_overrides(path: str | Path | list[str | Path] | tuple[str | Path, ...] | None) -> dict[str, str]:
+    if path is None:
+        return {}
+    if isinstance(path, (list, tuple, set)):
+        merged: dict[str, str] = {}
+        for item in path:
+            merged.update(load_summary_overrides(item))
+        return merged
     override_path = Path(path)
     if not override_path.exists():
         return {}
@@ -970,8 +979,9 @@ def parse_entries(xml_text: str) -> list[dict[str, Any]]:
 
 
 def collect_records(args: argparse.Namespace, as_of: dt.datetime) -> tuple[list[dict[str, Any]], list[str]]:
-    window_start = (as_of - dt.timedelta(days=args.days)).astimezone(UTC)
-    window_end = as_of.astimezone(UTC)
+    window_start = getattr(args, "window_start", as_of - dt.timedelta(days=args.days)).astimezone(UTC)
+    window_end = getattr(args, "window_end", as_of).astimezone(UTC)
+    window_end_exclusive = bool(getattr(args, "window_end_exclusive", False))
     by_id: dict[str, dict[str, Any]] = {}
     errors: list[str] = []
     summary_overrides = load_summary_overrides(args.summary_overrides)
@@ -1006,7 +1016,12 @@ def collect_records(args: argparse.Namespace, as_of: dt.datetime) -> tuple[list[
             oldest = min(record["updated_datetime"] for record in page_records)
             for record in page_records:
                 updated = record["updated_datetime"]
-                if window_start <= updated <= window_end:
+                in_window = (
+                    window_start <= updated < window_end
+                    if window_end_exclusive
+                    else window_start <= updated <= window_end
+                )
+                if in_window:
                     existing = by_id.setdefault(record["base_id"], record)
                     if updated > existing["updated_datetime"]:
                         existing.update(record)
@@ -1076,11 +1091,50 @@ def is_weekly_report(days: int, report_kind: str = "auto") -> bool:
 
 
 def report_label(days: int, report_kind: str = "auto") -> str:
-    return "周报" if is_weekly_report(days, report_kind) else "日报"
+    return WEEKLY_SUBDIR if is_weekly_report(days, report_kind) else DAILY_SUBDIR
 
 
-def period_dir(base_output_dir: str | Path, as_of: dt.datetime) -> Path:
-    return Path(base_output_dir) / as_of.strftime("%Y") / as_of.strftime("%m")
+def local_date(value: dt.datetime | dt.date) -> dt.date:
+    if isinstance(value, dt.datetime):
+        return value.astimezone(CHINA_TZ).date()
+    return value
+
+
+def fixed_week_dates(as_of: dt.datetime) -> tuple[dt.date, dt.date]:
+    report_date = as_of.astimezone(CHINA_TZ).date()
+    week_start = report_date - dt.timedelta(days=report_date.weekday())
+    week_end = week_start + dt.timedelta(days=6)
+    return week_start, week_end
+
+
+def fixed_week_datetimes(as_of: dt.datetime) -> tuple[dt.datetime, dt.datetime]:
+    week_start, week_end = fixed_week_dates(as_of)
+    window_start = dt.datetime.combine(week_start, dt.time.min, tzinfo=CHINA_TZ)
+    window_end = dt.datetime.combine(week_end + dt.timedelta(days=1), dt.time.min, tzinfo=CHINA_TZ)
+    return window_start, window_end
+
+
+def date_range_stamp(start: dt.date, end: dt.date) -> str:
+    return f"{start.isoformat()}_to_{end.isoformat()}"
+
+
+def month_segments(week_start: dt.date, week_end: dt.date) -> list[dict[str, dt.date]]:
+    segments: list[dict[str, dt.date]] = []
+    current = week_start
+    while current <= week_end:
+        if current.month == 12:
+            next_month = dt.date(current.year + 1, 1, 1)
+        else:
+            next_month = dt.date(current.year, current.month + 1, 1)
+        segment_end = min(week_end, next_month - dt.timedelta(days=1))
+        segments.append({"segment_start": current, "segment_end": segment_end})
+        current = segment_end + dt.timedelta(days=1)
+    return segments
+
+
+def period_dir(base_output_dir: str | Path, as_of: dt.datetime | dt.date) -> Path:
+    report_date = local_date(as_of)
+    return Path(base_output_dir) / report_date.strftime("%Y") / report_date.strftime("%m")
 
 
 def period_report_dir(
@@ -1089,8 +1143,110 @@ def period_report_dir(
     days: int,
     report_kind: str = "auto",
 ) -> Path:
-    subdir = "周报" if is_weekly_report(days, report_kind) else "日报"
+    subdir = WEEKLY_SUBDIR if is_weekly_report(days, report_kind) else DAILY_SUBDIR
     return period_dir(base_output_dir, as_of) / subdir
+
+
+def weekly_report_dir(
+    base_output_dir: str | Path,
+    week_start: dt.date,
+    week_end: dt.date,
+    segment_date: dt.date,
+) -> Path:
+    return period_dir(base_output_dir, segment_date) / WEEKLY_SUBDIR / date_range_stamp(week_start, week_end)
+
+
+def record_updated_date(record: dict[str, Any]) -> dt.date | None:
+    try:
+        return dt.datetime.fromisoformat(record["updated_local"]).astimezone(CHINA_TZ).date()
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def records_in_date_range(
+    records: list[dict[str, Any]],
+    segment_start: dt.date,
+    segment_end: dt.date,
+) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    for record in records:
+        updated_date = record_updated_date(record)
+        if updated_date is not None and segment_start <= updated_date <= segment_end:
+            selected.append(record)
+    return selected
+
+
+def report_metadata_for_scope(
+    args: argparse.Namespace,
+    as_of: dt.datetime,
+    report_scope: str,
+    segment_start: dt.date | None = None,
+    segment_end: dt.date | None = None,
+) -> dict[str, Any]:
+    window_start = getattr(args, "window_start", as_of - dt.timedelta(days=args.days))
+    window_end = getattr(args, "window_end", as_of)
+    metadata: dict[str, Any] = {
+        "report_scope": report_scope,
+        "window_start": window_start.isoformat(),
+        "window_end": window_end.isoformat(),
+        "window_end_exclusive": bool(getattr(args, "window_end_exclusive", False)),
+    }
+    week_start = getattr(args, "week_start_date", None)
+    week_end = getattr(args, "week_end_date", None)
+    if week_start and week_end:
+        metadata["week_start"] = week_start.isoformat()
+        metadata["week_end"] = week_end.isoformat()
+    if segment_start and segment_end:
+        metadata["segment_start"] = segment_start.isoformat()
+        metadata["segment_end"] = segment_end.isoformat()
+    return metadata
+
+
+def metadata_datetime(report_metadata: dict[str, Any] | None, key: str) -> dt.datetime | None:
+    if not report_metadata:
+        return None
+    value = report_metadata.get(key)
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=CHINA_TZ)
+    return parsed.astimezone(CHINA_TZ)
+
+
+def briefing_metadata_lines(report_metadata: dict[str, Any] | None, language: str) -> list[str]:
+    if not report_metadata:
+        return []
+    week_start = report_metadata.get("week_start")
+    week_end = report_metadata.get("week_end")
+    segment_start = report_metadata.get("segment_start")
+    segment_end = report_metadata.get("segment_end")
+    lines: list[str] = []
+    if week_start and week_end:
+        if language == "en":
+            lines.append(f"Week range: {week_start} to {week_end}.")
+        elif language == "bilingual":
+            lines.append(f"\u5468\u62a5\u8303\u56f4 / Week range: {week_start} \u81f3 {week_end} / {week_start} to {week_end}.")
+        else:
+            lines.append(f"\u5468\u62a5\u8303\u56f4\uff1a{week_start} \u81f3 {week_end}\u3002")
+    if segment_start and segment_end and (segment_start != week_start or segment_end != week_end):
+        if language == "en":
+            lines.append(f"Segment range: {segment_start} to {segment_end}.")
+        elif language == "bilingual":
+            lines.append(f"\u5206\u6bb5\u8303\u56f4 / Segment range: {segment_start} \u81f3 {segment_end} / {segment_start} to {segment_end}.")
+        else:
+            lines.append(f"\u5206\u6bb5\u8303\u56f4\uff1a{segment_start} \u81f3 {segment_end}\u3002")
+    return lines
+
+
+def render_report_metadata_html(report_metadata: dict[str, Any] | None, language: str) -> str:
+    lines = briefing_metadata_lines(report_metadata, language)
+    if not lines:
+        return ""
+    return '<p class="muted">' + "<br>".join(html_escape(line) for line in lines) + "</p>"
 
 
 def render_paper_card(record: dict[str, Any], index: int, language: str = "zh") -> str:
@@ -1302,9 +1458,11 @@ def render_html(
     report_kind: str = "auto",
     tracking_updates: list[str] | None = None,
     tracking_path: str | None = None,
+    report_metadata: dict[str, Any] | None = None,
 ) -> str:
     publication_updates = publication_updates or []
     tracking_updates = tracking_updates or []
+    report_metadata = report_metadata or {}
     report_date = as_of.strftime("%Y-%m-%d")
     label = report_label(days, report_kind)
     if language == "en":
@@ -1340,7 +1498,9 @@ def render_html(
         report_date_label = "报告日期"
         window_label = "检索窗口"
         footer_text = "数据源：arXiv API。记录按 arXiv ID 去重；更新时间使用 arXiv updated 字段过滤。中文要点由本地规则基于题名与摘要自动提取，正式引用前请打开原文核对。"
-    window_start = as_of - dt.timedelta(days=days)
+    window_start = metadata_datetime(report_metadata, "window_start") or as_of - dt.timedelta(days=days)
+    window_end = metadata_datetime(report_metadata, "window_end") or as_of
+    period_extra_html = render_report_metadata_html(report_metadata, language)
     counts = topic_counts(records)
     highlights = sorted(records, key=lambda item: (item.get("score", 0), item["updated_local"]), reverse=True)[:5]
 
@@ -1638,7 +1798,8 @@ def render_html(
   <header>
     <div class="wrap">
       <h1>{html_escape(field_name)}{html_escape(label)}</h1>
-      <p class="muted">{html_escape(report_date_label)}：{html_escape(report_date)} · {html_escape(window_label)}：{html_escape(window_start.strftime('%Y-%m-%d %H:%M'))} 至 {html_escape(as_of.strftime('%Y-%m-%d %H:%M'))}（Asia/Shanghai）</p>
+      <p class="muted">{html_escape(report_date_label)}：{html_escape(report_date)} · {html_escape(window_label)}：{html_escape(window_start.strftime('%Y-%m-%d %H:%M'))} 至 {html_escape(window_end.strftime('%Y-%m-%d %H:%M'))}（Asia/Shanghai）</p>
+      {period_extra_html}
     </div>
   </header>
   <main class="wrap">
@@ -1681,11 +1842,13 @@ def make_briefing(
     report_kind: str = "auto",
     tracking_updates: list[str] | None = None,
     tracking_path: str | None = None,
+    report_metadata: dict[str, Any] | None = None,
 ) -> str:
     publication_updates = publication_updates or []
     tracking_updates = tracking_updates or []
     report_date = as_of.strftime("%Y-%m-%d")
     label = report_label(days, report_kind)
+    metadata_lines = briefing_metadata_lines(report_metadata, language)
     if language == "en":
         en_label = "weekly report" if label == "周报" else "daily report"
         if not records:
@@ -1724,6 +1887,8 @@ def make_briefing(
             lines.append(f"Tracking folder: {tracking_path}")
         if skipped_seen_count:
             lines.append(f"Previously reported records excluded automatically: {skipped_seen_count}.")
+        if metadata_lines:
+            lines[1:1] = metadata_lines
         return "\n".join(lines)
     if language == "bilingual":
         en_label = "weekly report" if label == "周报" else "daily report"
@@ -1763,6 +1928,8 @@ def make_briefing(
             lines.append(f"追踪档 / Tracking folder: {tracking_path}")
         if skipped_seen_count:
             lines.append(f"已自动排除此前已汇报文献 / Previously reported records excluded automatically: {skipped_seen_count}.")
+        if metadata_lines:
+            lines[1:1] = metadata_lines
         return "\n".join(lines)
     if not records and skipped_seen_count:
         lines = [
@@ -1807,6 +1974,8 @@ def make_briefing(
         lines.append(f"追踪档：{tracking_path}")
     if skipped_seen_count:
         lines.append(f"已自动排除此前已汇报文献：{skipped_seen_count} 篇。")
+    if metadata_lines:
+        lines[1:1] = metadata_lines
     return "\n".join(lines)
 
 
@@ -1824,14 +1993,16 @@ def serializable_report(
     track_group: str | None = None,
     tracking_updates: list[str] | None = None,
     tracking_path: str | None = None,
+    report_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     publication_updates = publication_updates or []
     tracking_updates = tracking_updates or []
-    return {
+    report_metadata = dict(report_metadata or {})
+    payload = {
         "report_date": as_of.strftime("%Y-%m-%d"),
         "timezone": "Asia/Shanghai",
-        "window_start": (as_of - dt.timedelta(days=days)).isoformat(),
-        "window_end": as_of.isoformat(),
+        "window_start": report_metadata.get("window_start", (as_of - dt.timedelta(days=days)).isoformat()),
+        "window_end": report_metadata.get("window_end", as_of.isoformat()),
         "field_name": field_name,
         "language": language,
         "report_kind": report_label(days, report_kind),
@@ -1847,6 +2018,8 @@ def serializable_report(
         "records": records,
         "errors": errors,
     }
+    payload.update(report_metadata)
+    return payload
 
 
 def state_path(output_dir: str | Path) -> Path:
@@ -1872,6 +2045,31 @@ def load_seen_state(path: Path) -> dict[str, Any]:
     raw_state["version"] = raw_state.get("version", 1)
     raw_state["seen"] = seen
     return raw_state
+
+
+def merge_seen_states(paths: list[Path]) -> dict[str, Any]:
+    merged: dict[str, Any] = {"version": 1, "seen": {}}
+    last_run = ""
+    for path in paths:
+        state = load_seen_state(path)
+        seen = state.get("seen", {})
+        if isinstance(seen, dict):
+            for base_id, metadata in seen.items():
+                previous = merged["seen"].get(base_id, {})
+                if not previous:
+                    merged["seen"][base_id] = metadata
+                    continue
+                previous_date = str(previous.get("last_reported") or previous.get("updated_local") or "")
+                current_date = str(metadata.get("last_reported") or metadata.get("updated_local") or "")
+                if current_date >= previous_date:
+                    merged["seen"][base_id] = {**previous, **metadata}
+        state_last_run = str(state.get("last_run", ""))
+        if state_last_run > last_run:
+            last_run = state_last_run
+    if last_run:
+        merged["last_run"] = last_run
+    merged["total_seen"] = len(merged["seen"])
+    return merged
 
 
 def filter_seen_records(
@@ -2110,34 +2308,6 @@ def update_tracking_state(
     return changes, group_dir
 
 
-def remove_prior_weekly_outputs(output_dir: Path, as_of: dt.datetime, current_stamp: str) -> list[Path]:
-    """Keep one weekly report per ISO week to avoid repeated overlapping reports."""
-    if not output_dir.exists():
-        return []
-
-    stem = "arxiv_polariton_weekly_report"
-    current_week = as_of.isocalendar()[:2]
-    removed: list[Path] = []
-    seen_stamps: set[str] = set()
-    for html_path in output_dir.glob(f"{stem}_*.html"):
-        date_text = html_path.stem.removeprefix(f"{stem}_")
-        if date_text == current_stamp or date_text in seen_stamps:
-            continue
-        seen_stamps.add(date_text)
-        try:
-            report_date = dt.datetime.strptime(date_text, "%Y-%m-%d")
-        except ValueError:
-            continue
-        if report_date.isocalendar()[:2] != current_week:
-            continue
-        for ext in (".html", ".json", ".txt"):
-            report_path = output_dir / f"{stem}_{date_text}{ext}"
-            if report_path.exists():
-                report_path.unlink()
-                removed.append(report_path)
-    return removed
-
-
 def write_outputs(
     records: list[dict[str, Any]],
     errors: list[str],
@@ -2150,79 +2320,137 @@ def write_outputs(
 ) -> tuple[Path, Path, Path, str]:
     publication_updates = publication_updates or []
     tracking_updates = tracking_updates or []
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    stamp = as_of.strftime("%Y-%m-%d")
     weekly = is_weekly_report(args.days, args.report_kind)
-    stem = "arxiv_literature_weekly_report" if weekly else "arxiv_literature_daily_report"
-    if weekly:
-        remove_prior_weekly_outputs(output_dir, as_of, stamp)
-    html_path = output_dir / f"{stem}_{stamp}.html"
-    json_path = output_dir / f"{stem}_{stamp}.json"
-    briefing_path = output_dir / f"{stem}_{stamp}.txt"
 
-    html_path.write_text(
-        render_html(
-            records,
+    def write_report_file_set(
+        output_dir: Path,
+        stem: str,
+        stamp: str,
+        report_records: list[dict[str, Any]],
+        report_publication_updates: list[dict[str, Any]],
+        report_metadata: dict[str, Any],
+    ) -> tuple[Path, Path, Path, str]:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        html_path = output_dir / f"{stem}_{stamp}.html"
+        json_path = output_dir / f"{stem}_{stamp}.json"
+        briefing_path = output_dir / f"{stem}_{stamp}.txt"
+
+        html_path.write_text(
+            render_html(
+                report_records,
+                errors,
+                as_of,
+                args.days,
+                skipped_seen_count,
+                report_publication_updates,
+                args.field_name,
+                args.language,
+                args.report_kind,
+                tracking_updates,
+                str(tracking_path) if tracking_path else None,
+                report_metadata,
+            ),
+            encoding="utf-8-sig",
+        )
+        json_path.write_text(
+            json.dumps(
+                serializable_report(
+                    report_records,
+                    errors,
+                    as_of,
+                    args.days,
+                    skipped_seen_count,
+                    report_publication_updates,
+                    args.field_name,
+                    args.language,
+                    args.report_kind,
+                    configured_search_queries(args),
+                    args.track_group,
+                    tracking_updates,
+                    str(tracking_path) if tracking_path else None,
+                    report_metadata,
+                ),
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        briefing = make_briefing(
+            report_records,
             errors,
+            html_path.resolve(),
             as_of,
             args.days,
             skipped_seen_count,
-            publication_updates,
+            report_publication_updates,
             args.field_name,
             args.language,
             args.report_kind,
             tracking_updates,
             str(tracking_path) if tracking_path else None,
-        ),
-        encoding="utf-8-sig",
-    )
-    json_path.write_text(
-        json.dumps(
-            serializable_report(
-                records,
-                errors,
-                as_of,
-                args.days,
-                skipped_seen_count,
-                publication_updates,
-                args.field_name,
-                args.language,
-                args.report_kind,
-                configured_search_queries(args),
-                args.track_group,
-                tracking_updates,
-                str(tracking_path) if tracking_path else None,
-            ),
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    briefing = make_briefing(
+            report_metadata,
+        )
+        briefing_path.write_text(briefing + "\n", encoding="utf-8-sig")
+        return html_path, json_path, briefing_path, briefing
+
+    if weekly and getattr(args, "week_start_date", None) and getattr(args, "week_end_date", None):
+        week_start: dt.date = args.week_start_date
+        week_end: dt.date = args.week_end_date
+        base_output_dir = Path(getattr(args, "base_output_dir", args.output_dir))
+        segments = list(getattr(args, "week_segments", []))
+
+        if len(segments) > 1:
+            for segment in segments:
+                segment_start = segment["segment_start"]
+                segment_end = segment["segment_end"]
+                segment_dir = weekly_report_dir(base_output_dir, week_start, week_end, segment_start)
+                segment_records = records_in_date_range(records, segment_start, segment_end)
+                segment_updates = records_in_date_range(publication_updates, segment_start, segment_end)
+                write_report_file_set(
+                    segment_dir,
+                    "arxiv_literature_weekly_segment",
+                    date_range_stamp(segment_start, segment_end),
+                    segment_records,
+                    segment_updates,
+                    report_metadata_for_scope(args, as_of, "weekly_segment", segment_start, segment_end),
+                )
+
+        summary_dir = weekly_report_dir(base_output_dir, week_start, week_end, week_end)
+        return write_report_file_set(
+            summary_dir,
+            "arxiv_literature_weekly_summary",
+            date_range_stamp(week_start, week_end),
+            records,
+            publication_updates,
+            report_metadata_for_scope(args, as_of, "weekly_summary", week_start, week_end),
+        )
+
+    output_dir = Path(args.output_dir)
+    return write_report_file_set(
+        output_dir,
+        "arxiv_literature_daily_report",
+        as_of.strftime("%Y-%m-%d"),
         records,
-        errors,
-        html_path.resolve(),
-        as_of,
-        args.days,
-        skipped_seen_count,
         publication_updates,
-        args.field_name,
-        args.language,
-        args.report_kind,
-        tracking_updates,
-        str(tracking_path) if tracking_path else None,
+        report_metadata_for_scope(args, as_of, "daily"),
     )
-    briefing_path.write_text(briefing + "\n", encoding="utf-8-sig")
-    return html_path, json_path, briefing_path, briefing
 
 
-def validate_window(records: list[dict[str, Any]], as_of: dt.datetime, days: int) -> list[str]:
-    start = as_of - dt.timedelta(days=days)
+def validate_window(
+    records: list[dict[str, Any]],
+    as_of: dt.datetime,
+    days: int,
+    window_start: dt.datetime | None = None,
+    window_end: dt.datetime | None = None,
+    window_end_exclusive: bool = False,
+) -> list[str]:
+    start = window_start or as_of - dt.timedelta(days=days)
+    end = window_end or as_of
     errors = []
     for record in records:
         updated = dt.datetime.fromisoformat(record["updated_local"])
-        if not (start <= updated <= as_of):
+        in_window = start <= updated < end if window_end_exclusive else start <= updated <= end
+        if not in_window:
             errors.append(f"{record['arxiv_id']} outside window: {record['updated_local']}")
     return errors
 
@@ -2281,13 +2509,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = _apply_config(parser.parse_args(raw_argv), parser, raw_argv)
     as_of = parse_as_of(args.as_of)
-    if args.report_kind == "weekly" and args.days < 7:
-        args.days = 7
     base_output_dir = Path(args.output_dir)
-    args.period_dir = str(period_dir(base_output_dir, as_of))
-    args.output_dir = str(period_report_dir(base_output_dir, as_of, args.days, args.report_kind))
-    if args.summary_overrides is None:
-        args.summary_overrides = str(Path(args.period_dir) / SUMMARY_STATE_FILENAME)
     if args.days <= 0:
         raise SystemExit("--days must be positive")
     if args.page_size <= 0 or args.max_pages <= 0:
@@ -2295,13 +2517,51 @@ def main(argv: list[str] | None = None) -> int:
     if args.retry_attempts <= 0 or args.retry_base_seconds <= 0:
         raise SystemExit("--retry-attempts and --retry-base-seconds must be positive")
 
+    weekly = is_weekly_report(args.days, args.report_kind)
+    args.base_output_dir = str(base_output_dir)
+    if weekly:
+        args.days = 7
+        args.include_seen = True
+        week_start, week_end = fixed_week_dates(as_of)
+        window_start, window_end = fixed_week_datetimes(as_of)
+        args.window_start = window_start
+        args.window_end = window_end
+        args.window_end_exclusive = True
+        args.week_start_date = week_start
+        args.week_end_date = week_end
+        args.week_range = date_range_stamp(week_start, week_end)
+        args.week_segments = month_segments(week_start, week_end)
+        period_dirs: list[str] = []
+        for segment in args.week_segments:
+            segment_period_dir = str(period_dir(base_output_dir, segment["segment_start"]))
+            if segment_period_dir not in period_dirs:
+                period_dirs.append(segment_period_dir)
+        args.period_dirs = period_dirs
+        args.period_dir = str(period_dir(base_output_dir, week_end))
+        args.output_dir = str(weekly_report_dir(base_output_dir, week_start, week_end, week_end))
+        if args.summary_overrides is None:
+            args.summary_overrides = [
+                str(Path(period_dir_text) / SUMMARY_STATE_FILENAME)
+                for period_dir_text in period_dirs
+            ]
+    else:
+        args.window_start = as_of - dt.timedelta(days=args.days)
+        args.window_end = as_of
+        args.window_end_exclusive = False
+        args.period_dirs = [str(period_dir(base_output_dir, as_of))]
+        args.period_dir = args.period_dirs[0]
+        args.output_dir = str(period_report_dir(base_output_dir, as_of, args.days, args.report_kind))
+        if args.summary_overrides is None:
+            args.summary_overrides = str(Path(args.period_dir) / SUMMARY_STATE_FILENAME)
+
     if args.empty_fixture:
         records: list[dict[str, Any]] = []
         errors: list[str] = []
     else:
         records, errors = collect_records(args, as_of)
 
-    seen_state = load_seen_state(state_path(args.period_dir))
+    seen_paths = [state_path(Path(period_dir_text)) for period_dir_text in getattr(args, "period_dirs", [args.period_dir])]
+    seen_state = merge_seen_states(seen_paths) if weekly else load_seen_state(seen_paths[0])
     skipped_seen_records: list[dict[str, Any]] = []
     publication_updates: list[dict[str, Any]] = []
     report_date = as_of.strftime("%Y-%m-%d")
@@ -2316,20 +2576,40 @@ def main(argv: list[str] | None = None) -> int:
         records, skipped_seen_records = filter_seen_records(records, seen_state)
         publication_updates = find_publication_updates(skipped_seen_records, seen_state)
 
-    window_errors = validate_window(records, as_of, args.days)
+    window_errors = validate_window(
+        records,
+        as_of,
+        args.days,
+        args.window_start,
+        args.window_end,
+        args.window_end_exclusive,
+    )
     if window_errors:
         errors.extend(window_errors)
 
     tracking_updates: list[str] = []
     tracking_path = tracking_group_dir(base_output_dir, args.track_group) if args.track_group else None
+    dry_run_metadata = report_metadata_for_scope(
+        args,
+        as_of,
+        "weekly_summary" if weekly else "daily",
+        getattr(args, "week_start_date", None) if weekly else None,
+        getattr(args, "week_end_date", None) if weekly else None,
+    )
 
     if args.dry_run:
         print(
             json.dumps(
                 {
                     "report_date": as_of.strftime("%Y-%m-%d"),
-                    "window_start": (as_of - dt.timedelta(days=args.days)).isoformat(),
-                    "window_end": as_of.isoformat(),
+                    "report_scope": dry_run_metadata["report_scope"],
+                    "window_start": dry_run_metadata["window_start"],
+                    "window_end": dry_run_metadata["window_end"],
+                    "window_end_exclusive": dry_run_metadata["window_end_exclusive"],
+                    "week_start": dry_run_metadata.get("week_start"),
+                    "week_end": dry_run_metadata.get("week_end"),
+                    "segment_start": dry_run_metadata.get("segment_start"),
+                    "segment_end": dry_run_metadata.get("segment_end"),
                     "total_records": len(records),
                     "skipped_seen_records": len(skipped_seen_records),
                     "publication_update_records": len(publication_updates),
@@ -2384,7 +2664,7 @@ def main(argv: list[str] | None = None) -> int:
         tracking_updates,
         tracking_path,
     )
-    if not args.include_seen:
+    if not weekly and not args.include_seen:
         save_seen_state(
             state_path(args.period_dir),
             update_seen_state(seen_state, records + publication_updates, as_of),

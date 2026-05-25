@@ -14,6 +14,29 @@ Every report card includes a lightweight `nature-reader` + `nature-polishing` st
 
 The daily and weekly automation remains source-grounded to arXiv metadata. Full-paper bilingual readers, figure extraction, and page-level source maps should still be generated through the separate `nature-reader` workflow when a paper needs intensive reading.
 
+## Fixed weekly archives
+
+Weekly reports now use a fixed Asia/Shanghai natural-week window: Monday 00:00 through the following Monday 00:00, displayed as Monday to Sunday. `--report-kind weekly` ignores `--days` for the window but keeps the flag for compatibility.
+
+Weekly output paths are stable and are not dynamically rolled forward or cleaned by ISO week. Re-running the same week overwrites the same summary target only.
+
+For a normal week, the summary is written under:
+
+```text
+outputs/arxiv_literature_reports/YYYY/MM/周报/YYYY-MM-DD_to_YYYY-MM-DD/
+arxiv_literature_weekly_summary_YYYY-MM-DD_to_YYYY-MM-DD.*
+```
+
+For a cross-month week, each involved month gets the same week folder with its own segment report, and the Sunday month also keeps the full-week summary:
+
+```text
+outputs/arxiv_literature_reports/2026/06/周报/2026-06-29_to_2026-07-05/arxiv_literature_weekly_segment_2026-06-29_to_2026-06-30.*
+outputs/arxiv_literature_reports/2026/07/周报/2026-06-29_to_2026-07-05/arxiv_literature_weekly_segment_2026-07-01_to_2026-07-05.*
+outputs/arxiv_literature_reports/2026/07/周报/2026-06-29_to_2026-07-05/arxiv_literature_weekly_summary_2026-06-29_to_2026-07-05.*
+```
+
+Weekly JSON/TXT/HTML outputs include `report_scope`, `week_start`, `week_end`, `segment_start`, and `segment_end`. Weekly runs merge seen-state and summary override files from all months touched by the week, but they do not write seen state; daily runs remain responsible for deduplication state.
+
 一个可配置的 arXiv 文献日报/周报生成器，同时提供 Python CLI 和 Codex skill。它可以按用户指定的研究领域检索 arXiv，基于更新时间窗口去重，生成 HTML、JSON 和 TXT 报告，并长期追踪重点课题组或重点论文的发表状态。
 
 默认示例面向“极化激元 + 2D/TMD + 钙钛矿极化激元”方向，并内置 Mak-Shan 通讯团队追踪模板；你也可以不用改 Python 代码，直接通过 JSON 配置换成自己的领域，例如 WSe2 superconductivity、二维磁性材料、perovskite polariton、LLM agents 等。
@@ -21,7 +44,7 @@ The daily and weekly automation remains source-grounded to arXiv metadata. Full-
 ## 功能
 
 - 按 arXiv API 检索任意关键词或检索式。
-- 支持日报和周报，周报默认至少覆盖 7 天并清理同一 ISO 周的旧周报。
+- 支持日报和固定周一到周日周报，重跑只覆盖同一周固定目标，不清理其它周报。
 - 支持中文、英文、中英双语报告：`zh`、`en`、`bilingual`。
 - 输出 HTML、JSON、TXT 三种文件。
 - 用 seen-state 文件记录已报告 arXiv ID，避免日报重复。
@@ -94,18 +117,18 @@ arxiv-literature-report --empty-fixture --report-kind weekly --language zh
 
 ```text
 outputs/arxiv_literature_reports/YYYY/MM/日报/
-outputs/arxiv_literature_reports/YYYY/MM/周报/
+outputs/arxiv_literature_reports/YYYY/MM/周报/YYYY-MM-DD_to_YYYY-MM-DD/
 ```
 
 每份报告会生成：
 
 ```text
-arxiv_literature_weekly_report_YYYY-MM-DD.html
-arxiv_literature_weekly_report_YYYY-MM-DD.json
-arxiv_literature_weekly_report_YYYY-MM-DD.txt
+arxiv_literature_weekly_summary_YYYY-MM-DD_to_YYYY-MM-DD.html
+arxiv_literature_weekly_summary_YYYY-MM-DD_to_YYYY-MM-DD.json
+arxiv_literature_weekly_summary_YYYY-MM-DD_to_YYYY-MM-DD.txt
 ```
 
-日报对应文件名为 `arxiv_literature_daily_report_YYYY-MM-DD.*`。
+跨月周还会在每个涉及月份写入 `arxiv_literature_weekly_segment_SEGMENT-START_to_SEGMENT-END.*`。日报对应文件名为 `arxiv_literature_daily_report_YYYY-MM-DD.*`。
 
 ## 自定义领域
 
@@ -309,9 +332,9 @@ git log --oneline -1
 
 ## 常见问题
 
-**为什么周报要加 `--include-seen`？**
+**周报如何处理已在日报出现过的论文？**
 
-日报会记录已报告 ID，周报通常需要汇总本周内容，所以建议加 `--include-seen` 或在 weekly profile 中设置 `include_seen: true`。
+日报会记录已报告 ID，周报需要汇总本周完整内容，所以 weekly 运行会自动包含 seen-state 中已由日报报告过的论文，并且不会写回 seen state。
 
 **为什么自定义领域结果为空？**
 

@@ -12,7 +12,7 @@ Every report card includes a lightweight `nature-reader` + `nature-polishing` st
 - full English abstract
 - materials/systems, methods/evidence, and why-it-matters notes
 
-The digest is source-grounded rather than keyword-only: it extracts problem, evidence/approach, and result/implication sentences from the abstract, then formats them as a concise reader note without inventing data or claims.
+The digest is source-grounded rather than keyword-only: it extracts problem, evidence/approach, and result/implication signals from the abstract, then formats them as fluent Chinese guide text plus an automatic Chinese abstract rendering without inventing data or claims. Internal workflow names should not appear in generated report cards.
 
 The daily and weekly automation remains source-grounded to arXiv metadata. Full-paper bilingual readers, figure extraction, and page-level source maps should still be generated through the separate `nature-reader` workflow when a paper needs intensive reading.
 

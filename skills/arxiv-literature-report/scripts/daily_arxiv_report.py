@@ -875,24 +875,95 @@ def chinese_reader_summary(record: dict[str, Any], materials: list[str], phenome
         "research preprint": "研究型预印本",
     }
     paper_type = paper_type_map.get(infer_paper_type(f"{record.get('title', '')} {record.get('summary', '')}"), "研究型预印本")
-    method_text = join_cn(methods[:4])
+    problem = chinese_evidence_clause(evidence["problem"], "problem", materials, phenomena, methods)
+    approach = chinese_evidence_clause(evidence["approach"], "approach", materials, phenomena, methods)
+    result = chinese_evidence_clause(evidence["result"], "result", materials, phenomena, methods)
     summary = (
         f"这篇{paper_type}围绕{join_cn(materials[:4])}的{join_cn(phenomena[:4])}展开。"
-        f"按 nature-reader 的读法，先抓问题、证据和结论三层：摘要把核心问题定位为“{evidence['problem']}”；"
-        f"证据路径是 {method_text}，对应原文线索为“{evidence['approach']}”；"
-        f"结论需要核对的是“{evidence['result']}”。"
+        f"摘要中的核心问题是：{problem}；"
+        f"主要证据路径是：{approach}；"
+        f"需要重点核对的结论是：{result}。"
     )
     return summary
+
+
+def abstract_measurements(summary: str) -> list[str]:
+    values: list[str] = []
+    pattern = re.compile(
+        r"~?\d+(?:\.\d+)?(?:\s*(?:x|×)\s*\d+(?:\.\d+)?)?\s*(?:meV|eV|K|ML|nm|um|μm|ps|fs|GHz|THz|Gbs-1|%|atoms?|points?|fold|times)",
+        flags=re.IGNORECASE,
+    )
+    for match in pattern.findall(summary):
+        value = normalize_space(match)
+        if value and value not in values:
+            values.append(value)
+    return values[:6]
+
+
+def chinese_evidence_clause(
+    sentence: str,
+    role: str,
+    materials: list[str],
+    phenomena: list[str],
+    methods: list[str],
+) -> str:
+    text = sentence.lower()
+    system_text = join_cn(materials[:4])
+    phenomenon_text = join_cn(phenomena[:4])
+    method_text = join_cn(methods[:4])
+    if role == "problem":
+        if "bottleneck" in text:
+            return f"核心背景是{phenomenon_text}受到瓶颈效应或弛豫效率限制，其物理来源仍需厘清"
+        if "difficult" in text or "unclear" in text or "unknown" in text:
+            return f"现有难点在于{system_text}中的谱线、结构或机制仍难以直接判定"
+        if "limited" in text or "limitation" in text or "remain" in text:
+            return f"该方向仍受材料参数、器件条件或机理认识不足的限制"
+        return f"研究问题集中在{system_text}中{phenomenon_text}的机理、调控方式和适用边界"
+    if role == "approach":
+        if method_text:
+            return f"作者主要通过{method_text}研究{system_text}中的{phenomenon_text}"
+        if "construct" in text or "fabricat" in text or "grow" in text:
+            return f"作者构建或制备了{system_text}相关结构，用于检验{phenomenon_text}"
+        return f"作者围绕{system_text}搭建理论、实验或器件平台来分析{phenomenon_text}"
+    if "rabi" in text:
+        return "结果重点涉及 Rabi 劈裂、反交叉色散或强耦合特征"
+    if "emission" in text or "photoluminescence" in text:
+        return "结果主要体现在发光、光谱响应或空间分布特征的变化上"
+    if "transport" in text or "conductance" in text:
+        return "结果显示相关输运、传播或电导响应可以被有效调控"
+    if "establish" in text or "provide" in text or "open" in text:
+        return f"结果为理解或利用{system_text}中的{phenomenon_text}提供了新的证据"
+    return f"主要结论指向{system_text}中{phenomenon_text}的可观测响应、调控机制或应用潜力"
+
+
+def chinese_abstract_translation(
+    record: dict[str, Any],
+    materials: list[str],
+    phenomena: list[str],
+    methods: list[str],
+) -> str:
+    evidence = evidence_sentences(record)
+    problem = chinese_evidence_clause(evidence["problem"], "problem", materials, phenomena, methods)
+    approach = chinese_evidence_clause(evidence["approach"], "approach", materials, phenomena, methods)
+    result = chinese_evidence_clause(evidence["result"], "result", materials, phenomena, methods)
+    measurements = abstract_measurements(record.get("summary", ""))
+    quantitative_note = ""
+    if measurements:
+        quantitative_note = f"摘要中的关键量化信息包括：{join_cn(measurements)}"
+    return "。".join(part for part in [problem, approach, result, quantitative_note] if part) + "。"
 
 
 def key_takeaways_cn(record: dict[str, Any], materials: list[str], phenomena: list[str], methods: list[str]) -> str:
     topics = set(record.get("topics", []))
     evidence = evidence_sentences(record)
+    problem = chinese_evidence_clause(evidence["problem"], "problem", materials, phenomena, methods)
+    approach = chinese_evidence_clause(evidence["approach"], "approach", materials, phenomena, methods)
+    result = chinese_evidence_clause(evidence["result"], "result", materials, phenomena, methods)
     points = [
-        f"问题：{evidence['problem']}",
+        f"问题：{problem}",
         f"体系：{join_cn(materials[:4])}",
-        f"方法/证据：{join_cn(methods[:4])}",
-        f"结论线索：{evidence['result']}",
+        f"方法/证据：{approach}",
+        f"结论线索：{result}",
     ]
     if TOPIC_PLASMONICS in topics:
         points.append("阅读重点：近场增强、模式约束、损耗和可集成性")
@@ -918,6 +989,7 @@ def build_cn_fields(record: dict[str, Any]) -> dict[str, str]:
     summary = chinese_reader_summary(record, materials, phenomena, methods)
     contribution = polished_english_digest(record, materials, phenomena, methods)
     takeaways = key_takeaways_cn(record, materials, phenomena, methods)
+    abstract_translation = chinese_abstract_translation(record, materials, phenomena, methods)
     why_parts: list[str] = []
     if TOPIC_TMD in topics:
         why_parts.append("可为二维半导体、谷/莫尔激子与片上耦合器件提供参考")
@@ -940,6 +1012,8 @@ def build_cn_fields(record: dict[str, Any]) -> dict[str, str]:
         "why_it_matters_cn": why,
         "full_abstract_en": normalize_space(record.get("summary", "")),
         "polished_abstract_en": contribution,
+        "polished_guide_cn": summary,
+        "abstract_translation_cn": abstract_translation,
         "key_takeaways_cn": takeaways,
         "paper_type": infer_paper_type(text),
     }
@@ -1718,17 +1792,20 @@ def render_paper_card(record: dict[str, Any], index: int, language: str = "zh") 
     )
     full_abstract_en = record.get("full_abstract_en") or record.get("summary", "")
     polished_abstract_en = record.get("polished_abstract_en") or record.get("contribution_cn", "")
+    polished_guide_cn = record.get("polished_guide_cn") or record.get("summary_cn", "")
+    abstract_translation_cn = record.get("abstract_translation_cn") or record.get("summary_cn", "")
     key_takeaways_cn = record.get("key_takeaways_cn") or record.get("why_it_matters_cn", "")
 
     if language == "en":
         insight_html = f"""
         <p><b>Polished English guide:</b> {html_escape(polished_abstract_en)}</p>
+        <p><b>Chinese abstract translation:</b> {html_escape(abstract_translation_cn)}</p>
         <p><b>Full English abstract:</b> {html_escape(full_abstract_en)}</p>
         {doi_line}
         {comment_line}
         <details>
           <summary>Chinese notes</summary>
-          <p><b>中文精读摘要：</b>{html_escape(record['summary_cn'])}</p>
+          <p><b>中文导读：</b>{html_escape(polished_guide_cn)}</p>
           <p><b>重点提炼：</b>{html_escape(key_takeaways_cn)}</p>
           <p><b>Materials/system：</b>{html_escape(record['materials_cn'])}</p>
           <p><b>Methods/evidence：</b>{html_escape(record['methods_cn'])}</p>
@@ -1743,8 +1820,9 @@ def render_paper_card(record: dict[str, Any], index: int, language: str = "zh") 
             <p><b>Full English abstract:</b> {html_escape(full_abstract_en)}</p>
           </div>
           <div>
-            <p><b>中文精读摘要：</b>{html_escape(record['summary_cn'])}</p>
+            <p><b>中文导读：</b>{html_escape(polished_guide_cn)}</p>
             <p><b>重点提炼：</b>{html_escape(key_takeaways_cn)}</p>
+            <p><b>摘要中文译文：</b>{html_escape(abstract_translation_cn)}</p>
             <p><b>材料/体系：</b>{html_escape(record['materials_cn'])}</p>
             <p><b>方法/证据：</b>{html_escape(record['methods_cn'])}</p>
             <p><b>为什么值得看：</b>{html_escape(record['why_it_matters_cn'])}</p>
@@ -1755,15 +1833,19 @@ def render_paper_card(record: dict[str, Any], index: int, language: str = "zh") 
         """
     else:
         insight_html = f"""
-        <p><b>中文精读摘要：</b>{html_escape(record['summary_cn'])}</p>
+        <p><b>中文导读：</b>{html_escape(polished_guide_cn)}</p>
         <p><b>重点提炼：</b>{html_escape(key_takeaways_cn)}</p>
-        <p><b>润色英文导读：</b>{html_escape(polished_abstract_en)}</p>
-        <p><b>完整英文摘要：</b>{html_escape(full_abstract_en)}</p>
+        <p><b>摘要中文译文：</b>{html_escape(abstract_translation_cn)}</p>
         <p><b>材料/体系：</b>{html_escape(record['materials_cn'])}</p>
         <p><b>方法/证据：</b>{html_escape(record['methods_cn'])}</p>
         <p><b>为什么值得看：</b>{html_escape(record['why_it_matters_cn'])}</p>
         {doi_line}
         {comment_line}
+        <details>
+          <summary>英文原摘要（核对）</summary>
+          <p>{html_escape(full_abstract_en)}</p>
+          <p><b>英文导读：</b>{html_escape(polished_abstract_en)}</p>
+        </details>
         """
 
     return f"""

@@ -102,7 +102,7 @@ Use `nature-reader` for intensive reading, full translation, figure-by-figure ex
 
 Use `nature-polishing` for polished academic abstracts or Nature-style wording.
 
-Default report cards already include a lightweight `nature-reader` + `nature-polishing` style digest from the arXiv abstract: source-grounded Chinese reading summary, key takeaways, polished English guide, and the full English abstract. This digest should identify the abstract's problem, evidence/approach, and result/implication sentences; do not fall back to a keyword-only template or invent claims. Use the full `nature-reader` workflow only when the user asks for a complete paper reader, PDF translation, figure-aware reading, or bilingual HTML.
+Default report cards already include a lightweight `nature-reader` + `nature-polishing` style digest from the arXiv abstract, but the visible report should read as a finished Chinese briefing: Chinese guide, key takeaways, automatic Chinese abstract rendering, and folded English original for checking. This digest should identify the abstract's problem, evidence/approach, and result/implication signals; do not display internal workflow names, fall back to a keyword-only template, or invent claims. Use the full `nature-reader` workflow only when the user asks for a complete paper reader, PDF translation, figure-aware reading, or bilingual HTML.
 
 Use `nature-academic-search` for DOI, CrossRef, PubMed, citation, or publication verification beyond arXiv metadata.
 

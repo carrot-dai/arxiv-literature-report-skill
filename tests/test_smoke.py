@@ -211,11 +211,18 @@ class SmokeTests(unittest.TestCase):
         self.assertIn(core.TOPIC_PLASMONICS, record["topics"])
         self.assertIn(core.TOPIC_PHOTONIC_CRYSTAL, record["topics"])
         self.assertEqual(record["full_abstract_en"], record["summary"])
-        self.assertIn("润色英文导读", core.render_paper_card(record, 1, "zh"))
+        card_html = core.render_paper_card(record, 1, "zh")
+        self.assertIn("中文导读", card_html)
+        self.assertIn("摘要中文译文", card_html)
+        self.assertIn("英文原摘要（核对）", card_html)
+        self.assertNotIn("nature-reader", card_html)
+        self.assertNotIn("润色英文导读", card_html)
         self.assertIn("重点提炼", core.render_paper_card(record, 1, "zh"))
         self.assertIn("问题：", record["key_takeaways_cn"])
         self.assertIn("结论线索：", record["key_takeaways_cn"])
         self.assertIn("addresses", record["polished_abstract_en"])
+        self.assertIn("abstract_translation_cn", record)
+        self.assertNotIn("Here we", record["abstract_translation_cn"])
 
         html = core.render_html(
             [record],

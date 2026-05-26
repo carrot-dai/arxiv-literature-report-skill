@@ -392,6 +392,8 @@ def _apply_config(
 
     if "include_seen" in values and "include_seen" not in provided:
         args.include_seen = bool(values["include_seen"])
+    if "include_publication_updates" in values and "include_publication_updates" not in provided:
+        args.include_publication_updates = bool(values["include_publication_updates"])
     if "include_uncategorized" in values and "include_uncategorized" not in provided:
         args.include_uncategorized = bool(values["include_uncategorized"])
     return args
@@ -1566,6 +1568,26 @@ def month_segments(week_start: dt.date, week_end: dt.date) -> list[dict[str, dt.
     return segments
 
 
+def period_dirs_for_window(
+    base_output_dir: str | Path,
+    window_start: dt.datetime,
+    window_end: dt.datetime,
+) -> list[str]:
+    start_date = local_date(window_start)
+    end_date = local_date(window_end)
+    current = dt.date(start_date.year, start_date.month, 1)
+    dirs: list[str] = []
+    while current <= end_date:
+        period = str(period_dir(base_output_dir, current))
+        if period not in dirs:
+            dirs.append(period)
+        if current.month == 12:
+            current = dt.date(current.year + 1, 1, 1)
+        else:
+            current = dt.date(current.year, current.month + 1, 1)
+    return dirs
+
+
 def period_dir(base_output_dir: str | Path, as_of: dt.datetime | dt.date) -> Path:
     report_date = local_date(as_of)
     return Path(base_output_dir) / report_date.strftime("%Y") / report_date.strftime("%m")
@@ -2570,6 +2592,55 @@ def merge_seen_states(paths: list[Path]) -> dict[str, Any]:
     return merged
 
 
+def merge_historical_daily_reports(
+    state: dict[str, Any],
+    period_dirs: list[str | Path],
+    report_date: str,
+) -> dict[str, Any]:
+    state.setdefault("version", 1)
+    seen = state.setdefault("seen", {})
+    if not isinstance(seen, dict):
+        seen = {}
+        state["seen"] = seen
+    for period in period_dirs:
+        daily_dir = Path(period) / DAILY_SUBDIR
+        if not daily_dir.exists():
+            continue
+        for path in daily_dir.glob("*_daily_report_*.json"):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            history_date = str(payload.get("report_date") or "")
+            if not history_date:
+                match = re.search(r"\d{4}-\d{2}-\d{2}", path.stem)
+                history_date = match.group(0) if match else ""
+            if not history_date or history_date >= report_date:
+                continue
+            history_records = list(payload.get("records") or []) + list(payload.get("publication_updates") or [])
+            for record in history_records:
+                if not isinstance(record, dict):
+                    continue
+                arxiv_id = str(record.get("arxiv_id") or "")
+                base_id = str(record.get("base_id") or arxiv_base_id(arxiv_id))
+                if not base_id:
+                    continue
+                seen.setdefault(
+                    base_id,
+                    {
+                        "first_reported": history_date,
+                        "last_reported": history_date,
+                        "latest_arxiv_id": arxiv_id,
+                        "title": record.get("title", ""),
+                        "updated_local": record.get("updated_local", ""),
+                        "topics": record.get("topics", []),
+                        "source": "historical_daily_report",
+                    },
+                )
+    state["total_seen"] = len(seen)
+    return state
+
+
 def filter_seen_records(
     records: list[dict[str, Any]],
     state: dict[str, Any],
@@ -2995,6 +3066,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Include records that were already reported in earlier runs.",
     )
     parser.add_argument(
+        "--include-publication-updates",
+        action="store_true",
+        help="Show DOI/journal updates for records that were already reported. Daily reports hide these by default.",
+    )
+    parser.add_argument(
         "--include-uncategorized",
         action="store_true",
         help="Keep fetched records that local polariton rules cannot classify.",
@@ -3046,11 +3122,14 @@ def main(argv: list[str] | None = None) -> int:
         args.window_start = as_of - dt.timedelta(days=args.days)
         args.window_end = as_of
         args.window_end_exclusive = False
-        args.period_dirs = [str(period_dir(base_output_dir, as_of))]
-        args.period_dir = args.period_dirs[0]
+        args.period_dirs = period_dirs_for_window(base_output_dir, args.window_start, args.window_end)
+        args.period_dir = str(period_dir(base_output_dir, as_of))
         args.output_dir = str(period_report_dir(base_output_dir, as_of, args.days, args.report_kind))
         if args.summary_overrides is None:
-            args.summary_overrides = str(Path(args.period_dir) / SUMMARY_STATE_FILENAME)
+            args.summary_overrides = [
+                str(Path(period_dir_text) / SUMMARY_STATE_FILENAME)
+                for period_dir_text in args.period_dirs
+            ]
 
     if args.empty_fixture:
         records: list[dict[str, Any]] = []
@@ -3059,20 +3138,24 @@ def main(argv: list[str] | None = None) -> int:
         records, errors = collect_records(args, as_of)
 
     seen_paths = [state_path(Path(period_dir_text)) for period_dir_text in getattr(args, "period_dirs", [args.period_dir])]
-    seen_state = merge_seen_states(seen_paths) if weekly else load_seen_state(seen_paths[0])
+    seen_state = merge_seen_states(seen_paths)
     skipped_seen_records: list[dict[str, Any]] = []
     publication_updates: list[dict[str, Any]] = []
     report_date = as_of.strftime("%Y-%m-%d")
+    if not weekly:
+        seen_state = merge_historical_daily_reports(seen_state, args.period_dirs, report_date)
     if args.include_seen:
-        publication_updates = find_publication_updates(
-            records,
-            seen_state,
-            report_date,
-            include_reported_on_date=True,
-        )
+        if args.include_publication_updates:
+            publication_updates = find_publication_updates(
+                records,
+                seen_state,
+                report_date,
+                include_reported_on_date=True,
+            )
     else:
         records, skipped_seen_records = filter_seen_records(records, seen_state)
-        publication_updates = find_publication_updates(skipped_seen_records, seen_state)
+        if args.include_publication_updates:
+            publication_updates = find_publication_updates(skipped_seen_records, seen_state)
 
     window_errors = validate_window(
         records,

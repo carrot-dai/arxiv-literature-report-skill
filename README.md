@@ -37,7 +37,7 @@ outputs/arxiv_literature_reports/2026/07/周报/2026-06-29_to_2026-07-05/arxiv_l
 outputs/arxiv_literature_reports/2026/07/周报/2026-06-29_to_2026-07-05/arxiv_literature_weekly_summary_2026-06-29_to_2026-07-05.*
 ```
 
-Weekly JSON/TXT/HTML outputs include `report_scope`, `week_start`, `week_end`, `segment_start`, and `segment_end`. Weekly runs merge seen-state and summary override files from all months touched by the week, but they do not write seen state; daily runs remain responsible for deduplication state.
+Weekly JSON/TXT/HTML outputs include `report_scope`, `week_start`, `week_end`, `segment_start`, and `segment_end`. Weekly runs merge seen-state and summary override files from all months touched by the week, but they do not write seen state; daily runs remain responsible for deduplication state. Daily runs exclude previously reported arXiv base IDs by merging seen-state files and prior daily JSON reports; already reported papers are counted as excluded and are not shown again in highlights, cards, or publication-update sections unless `--include-publication-updates` is explicitly requested.
 
 Daily and weekly outputs also include `date_counts`, show the date distribution in TXT/HTML, and render paper cards under updated-date sections before topic subsections. This keeps a 5-day daily window readable instead of mixing all records into one undated list.
 
@@ -51,8 +51,8 @@ Daily and weekly outputs also include `date_counts`, show the date distribution 
 - 支持日报和固定周一到周日周报，重跑只覆盖同一周固定目标，不清理其它周报。
 - 支持中文、英文、中英双语报告：`zh`、`en`、`bilingual`。
 - 输出 HTML、JSON、TXT 三种文件。
-- 用 seen-state 文件记录已报告 arXiv ID，避免日报重复。
-- 追踪已见 preprint 的 DOI 和 journal reference 更新。
+- 用 seen-state 文件和历史日报 JSON 记录已报告 arXiv base ID，避免日报重复。
+- 可选追踪已见 preprint 的 DOI 和 journal reference 更新；日报默认不展示这些旧文献更新。
 - 维护课题组追踪目录，记录重点作者、主题、论文和时间线。
 - 无第三方 Python 依赖，适合本地、服务器或自动化环境运行。
 - 可作为 Codex skill 调用，并可桥接 `nature-reader`、`nature-polishing`、`nature-academic-search`、`nature-paper2ppt` 等增强工作流。
@@ -234,6 +234,7 @@ articles/<safe-paper-title>/
 - `output_dir`：输出根目录。
 - `track_group`：课题组名称。
 - `include_seen`：是否包含已经报告过的文献，周报通常建议开启。
+- `include_publication_updates`：是否展示已汇报文献的 DOI/journal 更新；日报默认关闭，避免旧文献再次出现在当天简报。
 - `include_uncategorized`：自定义领域建议开启，避免内置 TMD/极化激元分类器过滤掉跨领域结果。
 
 命令行参数优先级高于配置文件。例如：
@@ -339,7 +340,7 @@ git log --oneline -1
 
 **周报如何处理已在日报出现过的论文？**
 
-日报会记录已报告 ID，周报需要汇总本周完整内容，所以 weekly 运行会自动包含 seen-state 中已由日报报告过的论文，并且不会写回 seen state。
+日报会记录已报告 base ID，并回扫历史日报 JSON 作为保险；已汇报论文后续版本、DOI 或 journal reference 更新默认不再出现在当天日报，只显示“已自动排除”的数量。周报需要汇总本周完整内容，所以 weekly 运行会自动包含 seen-state 中已由日报报告过的论文，并且不会写回 seen state。
 
 **为什么自定义领域结果为空？**
 

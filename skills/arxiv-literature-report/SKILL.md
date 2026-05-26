@@ -61,6 +61,8 @@ For a normal week, write the full summary to `outputs/arxiv_literature_reports/Y
 
 For a cross-month week, write one `arxiv_literature_weekly_segment_SEGMENT-START_to_SEGMENT-END.*` into each month folder and write the full-week `arxiv_literature_weekly_summary_WEEK-START_to_WEEK-END.*` only in the Sunday month. Weekly reports merge seen and summary override files from all touched months but never write seen state; daily reports remain responsible for seen-state updates.
 
+Daily reports must not re-report a previously reported paper. Treat the arXiv base ID, not the version suffix, as the deduplication key. Merge seen-state files and prior daily JSON reports before filtering. Already reported papers should only contribute to the excluded count and must not appear again in daily highlights, paper cards, JSON `records`, or publication-update sections unless the user explicitly asks for `--include-publication-updates`.
+
 Daily and weekly reports must expose date partitioning in the content, not only in filenames: TXT/JSON/HTML include `date_counts`, HTML shows a date distribution summary, and paper cards render under updated-date sections before topic subsections.
 
 ## Parameters
@@ -74,6 +76,7 @@ Daily and weekly reports must expose date partitioning in the content, not only 
 - `--report-kind auto|daily|weekly`: output folder and report labeling.
 - `--track-group`: update `outputs/arxiv_literature_reports/group_tracking/<group-name>/`.
 - `--include-seen`: include already-reported records, useful for weekly rollups.
+- `--include-publication-updates`: opt in to DOI/journal updates for already-reported records. Do not use this for normal daily briefings.
 - `--include-uncategorized`: keep records from custom queries even if the built-in classifier does not categorize them.
 - `--empty-fixture`: write an empty report without network; use for smoke tests.
 

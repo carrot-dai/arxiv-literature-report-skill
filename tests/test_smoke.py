@@ -241,6 +241,126 @@ class SmokeTests(unittest.TestCase):
         )
         self.assertEqual(payload["date_counts"], {"2026-05-24": 1})
 
+    def test_daily_history_is_used_for_seen_filtering(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            month_dir = Path(tmp) / "2026" / "05"
+            daily_dir = month_dir / "日报"
+            daily_dir.mkdir(parents=True)
+            history = {
+                "report_date": "2026-05-25",
+                "records": [
+                    {
+                        "arxiv_id": "2605.00001v1",
+                        "base_id": "2605.00001",
+                        "title": "Already reported",
+                    }
+                ],
+            }
+            (daily_dir / "arxiv_literature_daily_report_2026-05-25.json").write_text(
+                json.dumps(history),
+                encoding="utf-8",
+            )
+            state = core.merge_historical_daily_reports(
+                {"version": 1, "seen": {}},
+                [month_dir],
+                "2026-05-26",
+            )
+            records = [
+                {"arxiv_id": "2605.00001v2", "base_id": "2605.00001"},
+                {"arxiv_id": "2605.00002v1", "base_id": "2605.00002"},
+            ]
+            fresh, skipped = core.filter_seen_records(records, state)
+
+            self.assertEqual([item["base_id"] for item in fresh], ["2605.00002"])
+            self.assertEqual([item["base_id"] for item in skipped], ["2605.00001"])
+
+    def test_daily_report_hides_seen_publication_updates_by_default(self) -> None:
+        record = {
+            "arxiv_id": "2605.00001v2",
+            "base_id": "2605.00001",
+            "abs_url": "https://arxiv.org/abs/2605.00001",
+            "pdf_url": "https://arxiv.org/pdf/2605.00001",
+            "title": "Already reported paper with DOI",
+            "summary": "A previously reported paper now has a DOI.",
+            "authors": ["A. Researcher"],
+            "updated": "2026-05-26T00:00:00Z",
+            "published": "2026-05-25T00:00:00Z",
+            "updated_local": "2026-05-26T08:00:00+08:00",
+            "published_local": "2026-05-25T08:00:00+08:00",
+            "primary_category": "physics.optics",
+            "categories": ["physics.optics"],
+            "doi": "10.0000/example",
+            "journal_ref": "",
+            "comment": "",
+            "topics": [core.TOPIC_PLASMONICS],
+            "matched_queries": ["fixture"],
+            "score": 1,
+        }
+        original_collect = core.collect_records
+        try:
+            core.collect_records = lambda args, as_of: ([dict(record)], [])  # type: ignore[assignment]
+            with tempfile.TemporaryDirectory() as tmp:
+                seen_path = Path(tmp) / "2026" / "05" / "arxiv_literature_seen_ids.json"
+                seen_path.parent.mkdir(parents=True)
+                seen_path.write_text(
+                    json.dumps({"version": 1, "seen": {"2605.00001": {"first_reported": "2026-05-25"}}}),
+                    encoding="utf-8",
+                )
+                result = core.main(
+                    [
+                        "--report-kind",
+                        "daily",
+                        "--as-of",
+                        "2026-05-26T09:00:00+08:00",
+                        "--output-dir",
+                        tmp,
+                    ]
+                )
+                self.assertEqual(result, 0)
+                payload_path = (
+                    Path(tmp)
+                    / "2026"
+                    / "05"
+                    / "日报"
+                    / "arxiv_literature_daily_report_2026-05-26.json"
+                )
+                payload = json.loads(payload_path.read_text(encoding="utf-8"))
+                self.assertEqual(payload["total_records"], 0)
+                self.assertEqual(payload["skipped_seen_records"], 1)
+                self.assertEqual(payload["publication_updates"], [])
+
+            with tempfile.TemporaryDirectory() as tmp:
+                seen_path = Path(tmp) / "2026" / "05" / "arxiv_literature_seen_ids.json"
+                seen_path.parent.mkdir(parents=True)
+                seen_path.write_text(
+                    json.dumps({"version": 1, "seen": {"2605.00001": {"first_reported": "2026-05-25"}}}),
+                    encoding="utf-8",
+                )
+                result = core.main(
+                    [
+                        "--report-kind",
+                        "daily",
+                        "--as-of",
+                        "2026-05-26T09:00:00+08:00",
+                        "--output-dir",
+                        tmp,
+                        "--include-publication-updates",
+                    ]
+                )
+                self.assertEqual(result, 0)
+                payload_path = (
+                    Path(tmp)
+                    / "2026"
+                    / "05"
+                    / "日报"
+                    / "arxiv_literature_daily_report_2026-05-26.json"
+                )
+                payload = json.loads(payload_path.read_text(encoding="utf-8"))
+                self.assertEqual(payload["total_records"], 0)
+                self.assertEqual(len(payload["publication_updates"]), 1)
+        finally:
+            core.collect_records = original_collect
+
     def test_oai_records_are_parsed_and_scoped_for_rate_limit_fallback(self) -> None:
         xml_text = """<?xml version="1.0" encoding="UTF-8"?>
 <OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/"

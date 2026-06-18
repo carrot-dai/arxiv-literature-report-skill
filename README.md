@@ -1,5 +1,46 @@
 # arXiv Literature Report Skill
 
+## Current default coverage
+
+The built-in polariton profile now searches and classifies exciton polaritons, 2D/TMD systems, perovskite polaritons, plasmonics, optical microcavities, and photonic crystal cavities.
+
+Every report card includes a lightweight `nature-reader` + `nature-polishing` style digest based on the arXiv abstract:
+
+- Chinese reading summary
+- key takeaways
+- polished English guide
+- full English abstract
+- materials/systems, methods/evidence, and why-it-matters notes
+
+The digest is source-grounded rather than keyword-only: it extracts problem, evidence/approach, and result/implication signals from the abstract, then formats them as fluent Chinese guide text plus an automatic Chinese abstract rendering without inventing data or claims. Internal workflow names should not appear in generated report cards.
+
+The daily and weekly automation remains source-grounded to arXiv metadata. Full-paper bilingual readers, figure extraction, and page-level source maps should still be generated through the separate `nature-reader` workflow when a paper needs intensive reading.
+
+## Fixed weekly archives
+
+Weekly reports now use a fixed Asia/Shanghai natural-week window: Monday 00:00 through the following Monday 00:00, displayed as Monday to Sunday. `--report-kind weekly` ignores `--days` for the window but keeps the flag for compatibility.
+
+Weekly output paths are stable and are not dynamically rolled forward or cleaned by ISO week. Re-running the same week overwrites the same summary target only.
+
+For a normal week, the summary is written under:
+
+```text
+outputs/arxiv_literature_reports/YYYY/MM/周报/YYYY-MM-DD_to_YYYY-MM-DD/
+arxiv_literature_weekly_summary_YYYY-MM-DD_to_YYYY-MM-DD.*
+```
+
+For a cross-month week, each involved month gets the same week folder with its own segment report, and the Sunday month also keeps the full-week summary:
+
+```text
+outputs/arxiv_literature_reports/2026/06/周报/2026-06-29_to_2026-07-05/arxiv_literature_weekly_segment_2026-06-29_to_2026-06-30.*
+outputs/arxiv_literature_reports/2026/07/周报/2026-06-29_to_2026-07-05/arxiv_literature_weekly_segment_2026-07-01_to_2026-07-05.*
+outputs/arxiv_literature_reports/2026/07/周报/2026-06-29_to_2026-07-05/arxiv_literature_weekly_summary_2026-06-29_to_2026-07-05.*
+```
+
+Weekly JSON/TXT/HTML outputs include `report_scope`, `week_start`, `week_end`, `segment_start`, and `segment_end`. Weekly runs merge seen-state and summary override files from all months touched by the week, but they do not write seen state; daily runs remain responsible for deduplication state. Daily runs exclude previously reported arXiv base IDs by merging seen-state files and prior daily JSON reports; already reported papers are counted as excluded and are not shown again in highlights, cards, or publication-update sections unless `--include-publication-updates` is explicitly requested.
+
+Daily and weekly outputs also include `date_counts`, show the date distribution in TXT/HTML, and render paper cards under updated-date sections before topic subsections. This keeps a 5-day daily window readable instead of mixing all records into one undated list.
+
 一个可配置的 arXiv 文献日报/周报生成器，同时提供 Python CLI 和 Codex skill。它可以按用户指定的研究领域检索 arXiv，基于更新时间窗口去重，生成 HTML、JSON 和 TXT 报告，并长期追踪重点课题组或重点论文的发表状态。
 
 默认示例面向“极化激元 + 2D/TMD + 钙钛矿极化激元”方向，并内置 Mak-Shan 通讯团队追踪模板；你也可以不用改 Python 代码，直接通过 JSON 配置换成自己的领域，例如 WSe2 superconductivity、二维磁性材料、perovskite polariton、LLM agents 等。
@@ -7,11 +48,11 @@
 ## 功能
 
 - 按 arXiv API 检索任意关键词或检索式。
-- 支持日报和周报，周报默认至少覆盖 7 天并清理同一 ISO 周的旧周报。
+- 支持日报和固定周一到周日周报，重跑只覆盖同一周固定目标，不清理其它周报。
 - 支持中文、英文、中英双语报告：`zh`、`en`、`bilingual`。
 - 输出 HTML、JSON、TXT 三种文件。
-- 用 seen-state 文件记录已报告 arXiv ID，避免日报重复。
-- 追踪已见 preprint 的 DOI 和 journal reference 更新。
+- 用 seen-state 文件和历史日报 JSON 记录已报告 arXiv base ID，避免日报重复。
+- 可选追踪已见 preprint 的 DOI 和 journal reference 更新；日报默认不展示这些旧文献更新。
 - 维护课题组追踪目录，记录重点作者、主题、论文和时间线。
 - 无第三方 Python 依赖，适合本地、服务器或自动化环境运行。
 - 可作为 Codex skill 调用，并可桥接 `nature-reader`、`nature-polishing`、`nature-academic-search`、`nature-paper2ppt` 等增强工作流。
@@ -80,18 +121,18 @@ arxiv-literature-report --empty-fixture --report-kind weekly --language zh
 
 ```text
 outputs/arxiv_literature_reports/YYYY/MM/日报/
-outputs/arxiv_literature_reports/YYYY/MM/周报/
+outputs/arxiv_literature_reports/YYYY/MM/周报/YYYY-MM-DD_to_YYYY-MM-DD/
 ```
 
 每份报告会生成：
 
 ```text
-arxiv_literature_weekly_report_YYYY-MM-DD.html
-arxiv_literature_weekly_report_YYYY-MM-DD.json
-arxiv_literature_weekly_report_YYYY-MM-DD.txt
+arxiv_literature_weekly_summary_YYYY-MM-DD_to_YYYY-MM-DD.html
+arxiv_literature_weekly_summary_YYYY-MM-DD_to_YYYY-MM-DD.json
+arxiv_literature_weekly_summary_YYYY-MM-DD_to_YYYY-MM-DD.txt
 ```
 
-日报对应文件名为 `arxiv_literature_daily_report_YYYY-MM-DD.*`。
+跨月周还会在每个涉及月份写入 `arxiv_literature_weekly_segment_SEGMENT-START_to_SEGMENT-END.*`。日报对应文件名为 `arxiv_literature_daily_report_YYYY-MM-DD.*`。
 
 ## 自定义领域
 
@@ -193,6 +234,7 @@ articles/<safe-paper-title>/
 - `output_dir`：输出根目录。
 - `track_group`：课题组名称。
 - `include_seen`：是否包含已经报告过的文献，周报通常建议开启。
+- `include_publication_updates`：是否展示已汇报文献的 DOI/journal 更新；日报默认关闭，避免旧文献再次出现在当天简报。
 - `include_uncategorized`：自定义领域建议开启，避免内置 TMD/极化激元分类器过滤掉跨领域结果。
 
 命令行参数优先级高于配置文件。例如：
@@ -247,6 +289,7 @@ arXiv API 有速率限制。脚本默认：
 - 使用 `User-Agent` 标识。
 - 每页请求之间等待 `--sleep-seconds`。
 - 遇到 429、503 或 rate-limit 文本会按 `--retry-attempts` 和 `--retry-base-seconds` 重试。
+- 如果 arXiv API 持续 429/503，脚本会退到官方 arXiv OAI `ListRecords`，扫描 `physics:cond-mat`、`physics:physics`、`physics:quant-ph` 和 `eess:eess`，再用本地极化激元/TMD/等离激元/微腔规则做严格过滤。这样可以避免把 API 限流误报成“真实空结果”。
 
 如果你频繁运行多个 profile，建议增大间隔：
 
@@ -295,9 +338,9 @@ git log --oneline -1
 
 ## 常见问题
 
-**为什么周报要加 `--include-seen`？**
+**周报如何处理已在日报出现过的论文？**
 
-日报会记录已报告 ID，周报通常需要汇总本周内容，所以建议加 `--include-seen` 或在 weekly profile 中设置 `include_seen: true`。
+日报会记录已报告 base ID，并回扫历史日报 JSON 作为保险；已汇报论文后续版本、DOI 或 journal reference 更新默认不再出现在当天日报，只显示“已自动排除”的数量。周报需要汇总本周完整内容，所以 weekly 运行会自动包含 seen-state 中已由日报报告过的论文，并且不会写回 seen state。
 
 **为什么自定义领域结果为空？**
 
@@ -305,7 +348,7 @@ git log --oneline -1
 
 **能不能自动翻译成高质量中文摘要？**
 
-内置摘要是轻量规则生成，适合快速筛选。若需要 Nature 风格摘要润色，建议在 Codex 中联动 `nature-polishing`。
+内置摘要已按 `nature-reader` 的证据定位和 `nature-polishing` 的摘要逻辑生成，会保留摘要中的问题、证据路径和结论线索。若需要全文级中文润色、图文对应或逐段翻译，仍应在 Codex 中联动完整的 `nature-reader` 或 `nature-polishing` 工作流。
 
 **这个项目会下载 PDF 吗？**
 

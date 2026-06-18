@@ -53,17 +53,30 @@ Network-free smoke test:
 arxiv-literature-report --empty-fixture --report-kind weekly --language zh
 ```
 
+## Fixed Weekly Archives
+
+Weekly reports use Asia/Shanghai natural weeks: Monday 00:00 through the following Monday 00:00, displayed as Monday to Sunday. `--report-kind weekly` ignores `--days` for the actual weekly window; keep `--days` only for compatibility with old configs.
+
+For a normal week, write the full summary to `outputs/arxiv_literature_reports/YYYY/MM/周报/YYYY-MM-DD_to_YYYY-MM-DD/arxiv_literature_weekly_summary_YYYY-MM-DD_to_YYYY-MM-DD.*`.
+
+For a cross-month week, write one `arxiv_literature_weekly_segment_SEGMENT-START_to_SEGMENT-END.*` into each month folder and write the full-week `arxiv_literature_weekly_summary_WEEK-START_to_WEEK-END.*` only in the Sunday month. Weekly reports merge seen and summary override files from all touched months but never write seen state; daily reports remain responsible for seen-state updates.
+
+Daily reports must not re-report a previously reported paper. Treat the arXiv base ID, not the version suffix, as the deduplication key. Merge seen-state files and prior daily JSON reports before filtering. Already reported papers should only contribute to the excluded count and must not appear again in daily highlights, paper cards, JSON `records`, or publication-update sections unless the user explicitly asks for `--include-publication-updates`.
+
+Daily and weekly reports must expose date partitioning in the content, not only in filenames: TXT/JSON/HTML include `date_counts`, HTML shows a date distribution summary, and paper cards render under updated-date sections before topic subsections.
+
 ## Parameters
 
 - `--config`: JSON config file with defaults and named profiles.
 - `--profile`: profile key inside the config file.
 - `--field-name`: human-readable field name used in titles and JSON metadata.
 - `--query`: custom arXiv API query. Can be repeated.
-- `--days`: arXiv updated-date window.
+- `--days`: arXiv updated-date window for daily reports. Weekly reports always use the fixed Monday-Sunday natural week.
 - `--language zh|en|bilingual`: report language. Default is `zh`.
 - `--report-kind auto|daily|weekly`: output folder and report labeling.
 - `--track-group`: update `outputs/arxiv_literature_reports/group_tracking/<group-name>/`.
 - `--include-seen`: include already-reported records, useful for weekly rollups.
+- `--include-publication-updates`: opt in to DOI/journal updates for already-reported records. Do not use this for normal daily briefings.
 - `--include-uncategorized`: keep records from custom queries even if the built-in classifier does not categorize them.
 - `--empty-fixture`: write an empty report without network; use for smoke tests.
 
@@ -73,7 +86,7 @@ Reports write to:
 
 ```text
 outputs/arxiv_literature_reports/YYYY/MM/日报/
-outputs/arxiv_literature_reports/YYYY/MM/周报/
+outputs/arxiv_literature_reports/YYYY/MM/周报/YYYY-MM-DD_to_YYYY-MM-DD/
 ```
 
 Research-group tracking writes to:
@@ -92,11 +105,12 @@ Use `nature-reader` for intensive reading, full translation, figure-by-figure ex
 
 Use `nature-polishing` for polished academic abstracts or Nature-style wording.
 
+Default report cards already include a lightweight `nature-reader` + `nature-polishing` style digest from the arXiv abstract, but the visible report should read as a finished Chinese briefing: Chinese guide, key takeaways, automatic Chinese abstract rendering, and folded English original for checking. This digest should identify the abstract's problem, evidence/approach, and result/implication signals; do not display internal workflow names, fall back to a keyword-only template, or invent claims. Use the full `nature-reader` workflow only when the user asks for a complete paper reader, PDF translation, figure-aware reading, or bilingual HTML.
+
 Use `nature-academic-search` for DOI, CrossRef, PubMed, citation, or publication verification beyond arXiv metadata.
 
 Use `nature-paper2ppt` for group-meeting or journal-club PPTX decks.
 
 ## Failure handling
 
-If arXiv returns transient 429/503 errors, rely on the script retry behavior. If the run still exits with warnings or errors, report the warning text and any generated paths.
-
+If arXiv returns transient 429/503 errors, rely on the script retry behavior first. If the API remains rate-limited, the script should use the official arXiv OAI fallback and strictly filter the broad OAI category scan back to the requested polariton/TMD/plasmonics/cavity scope. If the run still exits with warnings or errors, report the warning text and any generated paths.
